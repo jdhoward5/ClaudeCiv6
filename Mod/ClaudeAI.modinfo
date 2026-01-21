@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Mod id="claude-ai-player" version="1.3">
+    <Properties>
+        <Name>Claude AI Player</Name>
+        <Description>Integrates Claude AI to play Civilization VI. Requires version.dll proxy installed in game directory. Claude will automatically control the first AI player. Shows an indicator in-game displaying which civilization Claude is controlling.</Description>
+        <Authors>jdhoward5</Authors>
+        <CompatibleVersions>2.0</CompatibleVersions>
+    </Properties>
+
+    <InGameActions>
+        <!-- Gameplay logic script -->
+        <AddGameplayScripts id="ClaudeAI_Scripts">
+            <Properties>
+                <LoadOrder>100</LoadOrder>
+            </Properties>
+            <File>ClaudeAI.lua</File>
+        </AddGameplayScripts>
+
+        <!-- In-game UI indicator -->
+        <AddUserInterfaces id="ClaudeAI_Indicator">
+            <Properties>
+                <Context>InGame</Context>
+                <LoadOrder>101</LoadOrder>
+            </Properties>
+            <File>UI/ClaudeIndicator.xml</File>
+        </AddUserInterfaces>
+    </InGameActions>
+
+    <Files>
+        <File>ClaudeAI.lua</File>
+        <File>UI/ClaudeIndicator.xml</File>
+        <File>UI/ClaudeIndicator.lua</File>
+    </Files>
+</Mod>

@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ClaudeIndicator.xml - Shows "Claude is thinking" indicator during AI turn -->
+<Context Name="ClaudeIndicator">
+
+    <!-- Status indicator in top-left corner showing Claude AI is active -->
+    <Container ID="StatusPanel"
+               Size="240,40"
+               Anchor="L,T"
+               Offset="10,10"
+               Hidden="false">
+
+        <!-- Dark background with slight transparency -->
+        <Grid ID="StatusBG"
+              Size="parent,parent"
+              Anchor="C,C"
+              Style="TechTree_TechComplete"
+              Color="40,40,50,230"/>
+
+        <!-- Left accent bar (purple/blue for AI theme) -->
+        <Box ID="StatusAccent"
+             Size="4,parent-8"
+             Anchor="L,C"
+             Offset="4,0"
+             Color="140,100,200,255"/>
+
+        <!-- Status text with civ info -->
+        <Label ID="StatusLabel"
+               String="[ICON_Capital] Claude AI"
+               Anchor="C,C"
+               Offset="4,0"
+               Style="FontNormal14"
+               Color="220,220,230,255"/>
+    </Container>
+
+    <!-- Centered thinking indicator - shown when Claude AI is processing -->
+    <Container ID="ThinkingPanel"
+               Size="380,70"
+               Anchor="C,T"
+               Offset="0,80"
+               Hidden="true">
+
+        <!-- Outer glow/shadow effect -->
+        <Grid ID="ThinkingGlow"
+              Size="parent+8,parent+8"
+              Anchor="C,C"
+              Style="BrightGlow"
+              Color="100,80,180,60"/>
+
+        <!-- Main dark background panel -->
+        <Grid ID="ThinkingBG"
+              Size="parent,parent"
+              Anchor="C,C"
+              Style="TechTree_TechComplete"
+              Color="30,25,45,245"/>
+
+        <!-- Top accent bar (animated color would be nice but static purple works) -->
+        <Box ID="ThinkingAccentTop"
+             Size="parent-16,3"
+             Anchor="C,T"
+             Offset="0,6"
+             Color="160,120,220,255"/>
+
+        <!-- Bottom accent bar -->
+        <Box ID="ThinkingAccentBottom"
+             Size="parent-16,3"
+             Anchor="C,B"
+             Offset="0,6"
+             Color="160,120,220,255"/>
+
+        <!-- Pulsing content container -->
+        <AlphaAnim ID="PulseAnim"
+                   Size="parent-20,parent-20"
+                   Anchor="C,C"
+                   Alpha0="0.6"
+                   Alpha1="1.0"
+                   Cycle="Bounce"
+                   Speed="1.5">
+
+            <!-- Thinking icon (brain/gear symbol) -->
+            <Label ID="ThinkingIcon"
+                   String="[ICON_TechBoosted]"
+                   Anchor="L,C"
+                   Offset="15,0"
+                   Style="FontNormal24"
+                   Color="180,150,255,255"/>
+
+            <!-- Main thinking text -->
+            <Label ID="ThinkingLabel"
+                   String="Claude AI is thinking..."
+                   Anchor="C,C"
+                   Offset="10,0"
+                   Style="FontNormal18"
+                   Color="240,235,255,255"/>
+
+        </AlphaAnim>
+
+        <!-- Animated dots indicator -->
+        <Container ID="DotsContainer"
+                   Size="60,20"
+                   Anchor="R,C"
+                   Offset="20,0">
+            <SlideAnim ID="DotAnim"
+                       Anchor="L,C"
+                       Size="40,20"
+                       Cycle="Bounce"
+                       Speed="3">
+                <Label String="..."
+                       Anchor="L,C"
+                       Style="FontNormal18"
+                       Color="180,150,255,255"/>
+            </SlideAnim>
+        </Container>
+    </Container>
+
+    <Script File="UI/ClaudeIndicator.lua"/>
+</Context>

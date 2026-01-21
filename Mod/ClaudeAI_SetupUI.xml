@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Context Name="ClaudeAI_SetupUI">
+    <Container Size="parent,parent">
+        <!-- Claude AI Configuration Panel -->
+        <!-- Positioned in bottom-left area of the staging room -->
+        <Container ID="ClaudeAIPanel"
+                   Size="280,140"
+                   Anchor="L,B"
+                   Offset="20,100">
+
+            <!-- Background -->
+            <Image ID="PanelBG"
+                   Size="parent,parent"
+                   Texture="Controls_TerrainPanel"
+                   SliceCorner="20,20"
+                   SliceSize="1,1"
+                   SliceTextureSize="40,40"/>
+
+            <!-- Title -->
+            <Label ID="TitleLabel"
+                   String="LOC_CLAUDE_AI_PANEL_TITLE"
+                   Anchor="C,T"
+                   Offset="0,10"
+                   Style="FontNormal18"/>
+
+            <!-- Enable/Disable Checkbox -->
+            <Container ID="EnableContainer"
+                       Size="parent,30"
+                       Anchor="L,T"
+                       Offset="15,40">
+                <CheckBox ID="EnableCheckbox"
+                          Size="24,24"
+                          Anchor="L,C"/>
+                <Label ID="EnableLabel"
+                       String="LOC_CLAUDE_AI_ENABLE"
+                       Anchor="L,C"
+                       Offset="30,0"
+                       Style="FontNormal14"/>
+            </Container>
+
+            <!-- Player Selection -->
+            <Container ID="PlayerSelectContainer"
+                       Size="parent,40"
+                       Anchor="L,T"
+                       Offset="15,75">
+                <Label ID="PlayerLabel"
+                       String="LOC_CLAUDE_AI_PLAYER_SELECT"
+                       Anchor="L,T"
+                       Style="FontNormal14"/>
+                <PullDown ID="PlayerPullDown"
+                          Size="240,30"
+                          Anchor="L,B"
+                          Style=",SelectSortEntry"/>
+            </Container>
+
+        </Container>
+    </Container>
+
+    <!-- Localized Strings -->
+    <LocalizedText>
+        <Row Tag="LOC_CLAUDE_AI_PANEL_TITLE" Language="en_US">
+            <Text>Claude AI Player</Text>
+        </Row>
+        <Row Tag="LOC_CLAUDE_AI_ENABLE" Language="en_US">
+            <Text>Enable Claude AI</Text>
+        </Row>
+        <Row Tag="LOC_CLAUDE_AI_PLAYER_SELECT" Language="en_US">
+            <Text>Control Player:</Text>
+        </Row>
+        <Row Tag="LOC_CLAUDE_AI_DISABLED" Language="en_US">
+            <Text>Disabled</Text>
+        </Row>
+        <Row Tag="LOC_CLAUDE_AI_PLAYER_SLOT" Language="en_US">
+            <Text>Player {1}</Text>
+        </Row>
+    </LocalizedText>
+
+    <Script File="ClaudeAI_SetupUI.lua"/>
+</Context>
