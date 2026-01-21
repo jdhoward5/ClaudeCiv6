@@ -1,0 +1,43 @@
+# Build output
+x64/
+Debug/
+Release/
+ClaudeMod/x64/
+ClaudeMod/Debug/
+ClaudeMod/Release/
+
+# Build artifacts
+*.obj
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.log
+*.tlog
+*.recipe
+*.lastbuildstate
+*.exp
+*.lib
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+ipch/
+
+# Claude Code local settings
+.claude/
+
+# Temp files
+tmpclaude-*
+
+# Compiled DLL (users should build their own)
+*.dll
+
+# Keep these exceptions
+!include/*.lib

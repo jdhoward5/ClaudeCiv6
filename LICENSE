@@ -1,0 +1,31 @@
+GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3, 19 November 2007
+
+Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
+
+This project is based on CivilizationVI Community Extension by WildW
+(https://github.com/Wild-W/CivilizationVI_CommunityExtension)
+which is licensed under AGPL-3.0.
+
+As required by AGPL-3.0, this derivative work is also distributed
+under the same license.
+
+Everyone is permitted to copy and distribute verbatim copies of this
+license document, but changing it is not allowed.
+
+For the full license text, see:
+https://www.gnu.org/licenses/agpl-3.0.en.html
+
+SUMMARY OF KEY TERMS:
+
+1. You may copy, distribute and modify the software as long as you track
+   changes/dates in source files.
+
+2. Any modifications to or software including (via compiler) GPL-licensed
+   code must also be made available under the GPL along with build &
+   install instructions.
+
+3. If you use this software as part of a service (including web services),
+   you must make the source code available to users of that service.
+
+This software is provided "as is", without warranty of any kind.
