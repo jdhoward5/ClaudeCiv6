@@ -53,13 +53,12 @@ Restart your terminal after setting the environment variable.
 
 ### 3. Install the DLL
 
-Navigate to your Civ6 installation:
+Copy the built `x64\Release\version.dll` to your Civ6 binaries folder:
 ```
 Steam\steamapps\common\Sid Meier's Civilization VI\Base\Binaries\Win64Steam\
 ```
 
-1. **Backup** the original `version.dll` (rename to `version_original.dll`)
-2. **Copy** the built `x64\Release\version.dll` to this folder
+This works because `version.dll` is a Windows system DLL (lives in System32). When the game launches, it finds our proxy first due to DLL search order. Our proxy forwards all calls to the real `version.dll` in System32 while injecting our hooks.
 
 ### 4. Install the Lua Mod
 
@@ -93,7 +92,8 @@ Edit `system_prompt.txt` to modify Claude's instructions without rebuilding the 
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  version.dll (Proxy DLL)                                    │
+│  version.dll (Proxy DLL in game folder)                     │
+│  ├── Forwards API calls to real version.dll in System32    │
 │  ├── Hooks GameCore initialization                          │
 │  ├── Captures Lua state via pcall hook                      │
 │  ├── Registers SendGameStateToClaudeAPI() in Lua            │
@@ -146,7 +146,7 @@ SendGameStateToClaudeAPI registered successfully
 
 ## Uninstallation
 
-1. Restore the original `version.dll` from your backup
+1. Delete `version.dll` from the Civ6 binaries folder (the game will use System32's copy)
 2. Delete the `ClaudeAI` mod folder (optional)
 
 ## Project Structure
