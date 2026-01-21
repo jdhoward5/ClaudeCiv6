@@ -63,9 +63,9 @@ Steam\steamapps\common\Sid Meier's Civilization VI\Base\Binaries\Win64Steam\
 
 ### 4. Install the Lua Mod
 
-Copy the `ClaudeAI` folder to your mods directory:
+Copy the contents of the `Mod/` folder to your mods directory:
 ```
-Documents\My Games\Sid Meier's Civilization VI\Mods\ClaudeAI\
+Mod/* -> Documents\My Games\Sid Meier's Civilization VI\Mods\ClaudeAI\
 ```
 
 ### 5. Enable the Mod
@@ -152,22 +152,21 @@ SendGameStateToClaudeAPI registered successfully
 ## Project Structure
 
 ```
-ClaudeMod/
+ClaudeCiv6/
 ├── dllmain.cpp              # DLL entry, GameCore hooking
 ├── HavokScriptIntegration.* # Lua integration
 ├── HavokScript.*            # HavokScript bindings
 ├── ClaudeAPI.*              # Claude API client
 ├── Log.*                    # Logging utilities
 ├── version.def              # DLL exports
-└── include/                 # MinHook, nlohmann/json
-
-Mods/ClaudeAI/
-├── ClaudeAI.modinfo         # Mod manifest
-├── ClaudeAI.lua             # Main gameplay script
-├── system_prompt.txt        # Claude's instructions
-└── UI/
-    ├── ClaudeIndicator.xml
-    └── ClaudeIndicator.lua  # UI integration
+├── include/                 # MinHook, nlohmann/json
+└── Mod/                     # Lua mod (copy to Civ6 Mods folder)
+    ├── ClaudeAI.modinfo     # Mod manifest
+    ├── ClaudeAI.lua         # Main gameplay script
+    ├── system_prompt.txt    # Claude's instructions
+    └── UI/
+        ├── ClaudeIndicator.xml
+        └── ClaudeIndicator.lua
 ```
 
 ## Credits
