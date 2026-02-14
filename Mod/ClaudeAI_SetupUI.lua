@@ -22,17 +22,6 @@ local m_selectedPlayerID = -1
 local m_playerEntries = {}
 
 -- ============================================================================
--- UI CONTROL REFERENCES
--- ============================================================================
-
-local Controls = {
-    ClaudeAIPanel = nil,
-    EnableCheckbox = nil,
-    PlayerPullDown = nil,
-    PlayerSelectContainer = nil,
-}
-
--- ============================================================================
 -- HELPER FUNCTIONS
 -- ============================================================================
 
@@ -105,7 +94,7 @@ local function PopulatePlayerList()
 
             -- Only show AI slots (SlotStatus 1 = AI, 3 = AI)
             -- SlotStatus: 0=None, 1=AI, 2=Human, 3=AI (closed?), etc.
-            if slotStatus == 1 or slotStatus == 3 or civName then
+            if slotStatus == 1 or slotStatus == 3 then
                 if civName and civName ~= "" then
                     -- Clean up the civilization name for display
                     local displayName = civName:gsub("CIVILIZATION_", "")
@@ -182,32 +171,11 @@ local function OnPlayerSelected(playerID)
     SaveSettings()
 end
 
+local m_isDirty = false
+
 local function OnGameConfigurationChanged()
-    -- Refresh player list when game configuration changes
-    print("[ClaudeAI Setup] Game configuration changed, refreshing...")
-    PopulatePlayerList()
-end
-
--- ============================================================================
--- VISIBILITY CONTROL
--- ============================================================================
-
-local function ShouldShowPanel()
-    -- Only show in staging room / game setup contexts
-    -- Check if we're in the right screen
-    if ContextPtr:IsHidden() then
-        return false
-    end
-
-    -- Show the panel
-    return true
-end
-
-local function UpdatePanelVisibility()
-    local panel = ContextPtr:LookUpControl("ClaudeAIPanel")
-    if panel then
-        panel:SetHide(not ShouldShowPanel())
-    end
+    -- Mark dirty so next OnShow rebuilds the list
+    m_isDirty = true
 end
 
 -- ============================================================================
@@ -250,13 +218,16 @@ local function Initialize()
         container:SetHide(not m_isEnabled)
     end
 
-    -- Listen for game configuration changes
-    if Events.SystemUpdateUI then
-        Events.SystemUpdateUI.Add(OnGameConfigurationChanged)
+    -- Listen for game configuration changes via appropriate events
+    if Events.PlayerInfoChanged then
+        Events.PlayerInfoChanged.Add(OnGameConfigurationChanged)
     end
-
-    -- Show the panel
-    UpdatePanelVisibility()
+    if Events.GameConfigChanged then
+        Events.GameConfigChanged.Add(OnGameConfigurationChanged)
+    end
+    if Events.MultiplayerGameParameterUpdated then
+        Events.MultiplayerGameParameterUpdated.Add(OnGameConfigurationChanged)
+    end
 
     print("[ClaudeAI Setup] Initialization complete")
     print("========================================")
@@ -268,8 +239,10 @@ end
 
 function OnShow()
     print("[ClaudeAI Setup] OnShow")
-    PopulatePlayerList()
-    UpdatePanelVisibility()
+    if m_isDirty then
+        PopulatePlayerList()
+        m_isDirty = false
+    end
 end
 
 function OnHide()
@@ -279,6 +252,19 @@ end
 -- Register context handlers
 ContextPtr:SetShowHandler(OnShow)
 ContextPtr:SetHideHandler(OnHide)
+
+-- Cleanup event handlers on context destruction
+ContextPtr:SetShutdownHandler(function()
+    if Events.PlayerInfoChanged then
+        Events.PlayerInfoChanged.Remove(OnGameConfigurationChanged)
+    end
+    if Events.GameConfigChanged then
+        Events.GameConfigChanged.Remove(OnGameConfigurationChanged)
+    end
+    if Events.MultiplayerGameParameterUpdated then
+        Events.MultiplayerGameParameterUpdated.Remove(OnGameConfigurationChanged)
+    end
+end)
 
 -- Initialize on load
 Initialize()

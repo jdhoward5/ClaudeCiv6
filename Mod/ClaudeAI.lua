@@ -197,6 +197,88 @@ function ClaudeAI.OnBuildingAddedToMap(x, y, buildingIndex, playerID, cityID, iP
     end)
 end
 
+-- Build a set of TraitTypes that belong to a specific player (civ + leader traits)
+-- Used to allow the player's own unique items through filters
+function ClaudeAI.BuildPlayerTraitSet(playerID)
+    local traits = {}
+    local config = PlayerConfigurations[playerID]
+    if not config then return traits end
+
+    local civType = config:GetCivilizationTypeName()
+    local leaderType = config:GetLeaderTypeName()
+
+    if civType and GameInfo.CivilizationTraits then
+        for row in GameInfo.CivilizationTraits() do
+            if row.CivilizationType == civType then
+                traits[row.TraitType] = true
+            end
+        end
+    end
+    if leaderType and GameInfo.LeaderTraits then
+        for row in GameInfo.LeaderTraits() do
+            if row.LeaderType == leaderType then
+                traits[row.TraitType] = true
+            end
+        end
+    end
+    return traits
+end
+
+-- Cached player traits (rebuilt each turn)
+ClaudeAI.CachedPlayerTraits = nil
+
+-- Pre-built lookup tables (initialized once from GameInfo)
+ClaudeAI.WonderList = nil              -- Array of {Index, BuildingType} for wonders only
+ClaudeAI.ImprovementTerrains = nil     -- impType -> {terrainType = true, ...}
+ClaudeAI.ImprovementFeatures = nil     -- impType -> {featureType = true, ...}
+ClaudeAI.ImprovementResources = nil    -- impType -> {resourceType = true, ...}
+
+function ClaudeAI.BuildLookupTables()
+    -- Wonder list: extract only IsWonder buildings from GameInfo
+    ClaudeAI.WonderList = {}
+    if GameInfo.Buildings then
+        for row in GameInfo.Buildings() do
+            if row.IsWonder then
+                table.insert(ClaudeAI.WonderList, { Index = row.Index, BuildingType = row.BuildingType })
+            end
+        end
+    end
+    print("[ClaudeAI] Wonder lookup: " .. #ClaudeAI.WonderList .. " wonders indexed")
+
+    -- Improvement terrain/feature/resource lookup tables
+    ClaudeAI.ImprovementTerrains = {}
+    if GameInfo.Improvement_ValidTerrains then
+        for row in GameInfo.Improvement_ValidTerrains() do
+            if not ClaudeAI.ImprovementTerrains[row.ImprovementType] then
+                ClaudeAI.ImprovementTerrains[row.ImprovementType] = {}
+            end
+            ClaudeAI.ImprovementTerrains[row.ImprovementType][row.TerrainType] = true
+        end
+    end
+
+    ClaudeAI.ImprovementFeatures = {}
+    if GameInfo.Improvement_ValidFeatures then
+        for row in GameInfo.Improvement_ValidFeatures() do
+            if not ClaudeAI.ImprovementFeatures[row.ImprovementType] then
+                ClaudeAI.ImprovementFeatures[row.ImprovementType] = {}
+            end
+            ClaudeAI.ImprovementFeatures[row.ImprovementType][row.FeatureType] = true
+        end
+    end
+
+    ClaudeAI.ImprovementResources = {}
+    if GameInfo.Improvement_ValidResources then
+        for row in GameInfo.Improvement_ValidResources() do
+            if not ClaudeAI.ImprovementResources[row.ImprovementType] then
+                ClaudeAI.ImprovementResources[row.ImprovementType] = {}
+            end
+            ClaudeAI.ImprovementResources[row.ImprovementType][row.ResourceType] = true
+        end
+    end
+
+    print("[ClaudeAI] Improvement lookup tables built")
+end
+
 -- Check if a wonder has been built anywhere in the world
 function ClaudeAI.IsWonderBuilt(buildingType)
     return ClaudeAI.BuiltWonders[buildingType] == true
@@ -206,10 +288,13 @@ end
 function ClaudeAI.ScanExistingWonders()
     ClaudeAI.BuiltWonders = {}  -- Reset
 
-    pcall(function()
-        -- Iterate through all players and their cities to find built wonders
-        local playerCount = PlayerManager.GetAliveMajorsCount() + PlayerManager.GetAliveMinorsCount()
+    -- Ensure lookup tables are built
+    if not ClaudeAI.WonderList then
+        ClaudeAI.BuildLookupTables()
+    end
 
+    pcall(function()
+        -- Iterate through all players and their cities, checking only wonders
         for playerID = 0, 62 do  -- Max player ID
             local pPlayer = Players[playerID]
             if pPlayer then
@@ -218,19 +303,14 @@ function ClaudeAI.ScanExistingWonders()
                     for _, pCity in pCities:Members() do
                         local pBuildings = pCity:GetBuildings()
                         if pBuildings then
-                            -- Check each wonder
-                            if GameInfo.Buildings then
-                                for row in GameInfo.Buildings() do
-                                    if row.IsWonder then
-                                        local hasWonder = false
-                                        pcall(function()
-                                            hasWonder = pBuildings:HasBuilding(row.Index)
-                                        end)
-                                        if hasWonder then
-                                            ClaudeAI.BuiltWonders[row.BuildingType] = true
-                                            print("[ClaudeAI] Found existing wonder: " .. row.BuildingType)
-                                        end
-                                    end
+                            for _, wonder in ipairs(ClaudeAI.WonderList) do
+                                local hasWonder = false
+                                pcall(function()
+                                    hasWonder = pBuildings:HasBuilding(wonder.Index)
+                                end)
+                                if hasWonder then
+                                    ClaudeAI.BuiltWonders[wonder.BuildingType] = true
+                                    print("[ClaudeAI] Found existing wonder: " .. wonder.BuildingType)
                                 end
                             end
                         end
@@ -324,6 +404,10 @@ function ClaudeAI.NotifyPlayerSet(playerID, civName, leaderName)
     if LuaEvents and LuaEvents.ClaudeAI_PlayerSet then
         LuaEvents.ClaudeAI_PlayerSet(playerID, civName, leaderName)
         ClaudeAI.Log("Notified UI: Player set to " .. tostring(playerID))
+    end
+    -- Also set as Game property so UI can poll it (LuaEvents may not fire cross-context)
+    if Game and Game.SetProperty then
+        Game.SetProperty("ClaudeAI_PlayerInfo", playerID .. "," .. tostring(civName) .. "," .. tostring(leaderName))
     end
 end
 
@@ -699,15 +783,14 @@ function ClaudeAI.TableToJSON(tbl, indent)
         end
     end
 
-    -- Check if array or object
-    local isArray = #tbl > 0 or next(tbl) == nil
-    local i = 1
-    for k, v in pairs(tbl) do
-        if k ~= i then
-            isArray = false
-            break
-        end
-        i = i + 1
+    -- Check if array or object (key-counting approach handles sparse tables correctly)
+    local isArray = false
+    local len = #tbl
+    if len > 0 or next(tbl) == nil then
+        isArray = true
+        local keyCount = 0
+        for _ in pairs(tbl) do keyCount = keyCount + 1 end
+        if keyCount ~= len then isArray = false end
     end
 
     local result = {}
@@ -724,7 +807,7 @@ function ClaudeAI.TableToJSON(tbl, indent)
         local items = {}
         for k, v in pairs(tbl) do
             local key = type(k) == "string" and k or tostring(k)
-            table.insert(items, '"' .. key .. '":' .. ClaudeAI.TableToJSON(v, indent + 1))
+            table.insert(items, '"' .. ClaudeAI.EscapeString(key) .. '":' .. ClaudeAI.TableToJSON(v, indent + 1))
         end
         table.insert(result, table.concat(items, ","))
         table.insert(result, "}")
@@ -853,12 +936,19 @@ function ClaudeAI.DecodeJSON(jsonStr)
                     local braceDepth = 0
                     local objEnd = nil
                     local inString = false
-                    local prevChar = ""
                     for i = objBegin, #arrayContent do
                         local char = arrayContent:sub(i, i)
-                        -- Track if we're inside a string (skip escaped quotes)
-                        if char == '"' and prevChar ~= '\\' then
-                            inString = not inString
+                        -- Track if we're inside a string (count consecutive backslashes)
+                        if char == '"' then
+                            local backslashCount = 0
+                            local checkPos = i - 1
+                            while checkPos >= 1 and arrayContent:sub(checkPos, checkPos) == '\\' do
+                                backslashCount = backslashCount + 1
+                                checkPos = checkPos - 1
+                            end
+                            if backslashCount % 2 == 0 then  -- Even = unescaped quote
+                                inString = not inString
+                            end
                         elseif not inString then
                             if char == '{' then
                                 braceDepth = braceDepth + 1
@@ -870,7 +960,6 @@ function ClaudeAI.DecodeJSON(jsonStr)
                                 end
                             end
                         end
-                        prevChar = char
                     end
 
                     if objEnd then
@@ -964,6 +1053,11 @@ end
 function ClaudeAI.SerializeUnit(pUnit)
     if not pUnit then return nil end
 
+    -- Pre-capture basic properties before pcall so error fallback doesn't crash
+    local preID = SafeGet(pUnit, "GetID") or -1
+    local preX = SafeGet(pUnit, "GetX") or -1
+    local preY = SafeGet(pUnit, "GetY") or -1
+
     local result = {}
     local success, err = pcall(function()
         local unitType = pUnit:GetType()
@@ -998,12 +1092,17 @@ function ClaudeAI.SerializeUnit(pUnit)
                 -- Check minimum distance to other cities (usually 3 tiles)
                 local tooCloseToCity = false
                 pcall(function()
-                    -- Check nearby plots for cities
+                    -- Check nearby plots for cities (Civ6 minimum city distance is 3 tiles apart)
                     for dx = -3, 3 do
                         for dy = -3, 3 do
-                            local nearPlot = Map.GetPlot(unitX + dx, unitY + dy)
+                            local nearX = unitX + dx
+                            local nearY = unitY + dy
+                            local nearPlot = Map.GetPlot(nearX, nearY)
                             if nearPlot and nearPlot:IsCity() then
-                                tooCloseToCity = true
+                                -- Use hex distance to validate proximity (< 4 catches distance 1-3)
+                                if Map.GetPlotDistance(unitX, unitY, nearX, nearY) < 4 then
+                                    tooCloseToCity = true
+                                end
                             end
                         end
                     end
@@ -1086,11 +1185,11 @@ function ClaudeAI.SerializeUnit(pUnit)
 
     if not success then
         ClaudeAI.Log("WARNING: Error serializing unit: " .. tostring(err))
-        -- Return minimal info on error
+        -- Return minimal info on error (using pre-captured values to avoid double-crash)
         return {
-            id = pUnit:GetID(),
-            x = pUnit:GetX(),
-            y = pUnit:GetY(),
+            id = preID,
+            x = preX,
+            y = preY,
             type = "Unknown",
             name = "Unknown",
         }
@@ -1101,6 +1200,11 @@ end
 
 function ClaudeAI.SerializeEnemyUnit(pUnit)
     if not pUnit then return nil end
+
+    -- Pre-capture basic properties before pcall so error fallback doesn't crash
+    local preX = SafeGet(pUnit, "GetX") or -1
+    local preY = SafeGet(pUnit, "GetY") or -1
+    local preOwner = SafeGet(pUnit, "GetOwner") or -1
 
     local result = {}
     local success, err = pcall(function()
@@ -1141,11 +1245,11 @@ function ClaudeAI.SerializeEnemyUnit(pUnit)
 
     if not success then
         ClaudeAI.Log("WARNING: Error serializing enemy unit: " .. tostring(err))
-        -- Return minimal info on error
+        -- Return minimal info on error (using pre-captured values to avoid double-crash)
         return {
-            x = pUnit:GetX(),
-            y = pUnit:GetY(),
-            owner = pUnit:GetOwner(),
+            x = preX,
+            y = preY,
+            owner = preOwner,
             type = "Unknown",
         }
     end
@@ -1192,7 +1296,7 @@ function ClaudeAI.SerializePlot(pPlot, playerID)
         -- Basic terrain info
         local terrainType = pPlot:GetTerrainType()
         local featureType = pPlot:GetFeatureType()
-        local resourceType = pPlot:GetResourceType()
+        local resourceType = pPlot:GetResourceType(playerID)
 
         -- Get all yields using SafeCall
         local yieldFood = GameInfo.Yields and GameInfo.Yields["YIELD_FOOD"]
@@ -1427,13 +1531,13 @@ function ClaudeAI.SerializeCity(pCity, playerID)
         local purchasable = ClaudeAI.GetPurchasableItems(pCity, playerID)
         if purchasable then
             -- Only include non-empty lists
-            if purchasable.goldUnits and #purchasable.goldUnits > 0 then
+            if (purchasable.goldUnits and #purchasable.goldUnits > 0) or (purchasable.goldBuildings and #purchasable.goldBuildings > 0) then
                 result.canPurchaseGold = {
                     units = purchasable.goldUnits,
                     buildings = purchasable.goldBuildings,
                 }
             end
-            if purchasable.faithUnits and #purchasable.faithUnits > 0 then
+            if (purchasable.faithUnits and #purchasable.faithUnits > 0) or (purchasable.faithBuildings and #purchasable.faithBuildings > 0) then
                 result.canPurchaseFaith = {
                     units = purchasable.faithUnits,
                     buildings = purchasable.faithBuildings,
@@ -1585,14 +1689,9 @@ function ClaudeAI.CalculateDistrictAdjacency(pPlot, districtType, playerID)
 
                     -- Check each adjacent tile (6 neighbors in hex grid)
                     local adjacentCount = 0
-                    local directions = {
-                        {0, 1}, {1, 0}, {1, -1}, {0, -1}, {-1, 0}, {-1, 1}
-                    }
 
-                    for _, dir in ipairs(directions) do
-                        local adjX = plotX + dir[1]
-                        local adjY = plotY + dir[2]
-                        local adjPlot = Map.GetPlot(adjX, adjY)
+                    for dir = 0, 5 do
+                        local adjPlot = Map.GetAdjacentPlot(plotX, plotY, dir)
 
                         if adjPlot then
                             local matches = false
@@ -1625,7 +1724,7 @@ function ClaudeAI.CalculateDistrictAdjacency(pPlot, districtType, playerID)
                                 end
                             elseif adjRow.AdjacentResource then
                                 -- Adjacent resource bonus
-                                local resourceType = adjPlot:GetResourceType()
+                                local resourceType = adjPlot:GetResourceType(playerID)
                                 if resourceType >= 0 then
                                     local resourceInfo = GameInfo.Resources[resourceType]
                                     if resourceInfo and resourceInfo.ResourceType == adjRow.AdjacentResource then
@@ -1805,12 +1904,15 @@ function ClaudeAI.GetCityBuildables(pCity, playerID)
     local cityPopulation = 1
     pcall(function() cityPopulation = pCity:GetPopulation() end)
 
+    -- Get player traits to allow their own unique items
+    local playerTraits = ClaudeAI.CachedPlayerTraits or ClaudeAI.BuildPlayerTraitSet(playerID)
+
     -- Get all units the player can potentially build
     pcall(function()
         if GameInfo.Units then
             for row in GameInfo.Units() do
-                -- Skip if it's a unique unit (has TraitType) - these are civ-specific
-                local dominated = row.TraitType ~= nil
+                -- Skip unique units from OTHER civs (allow our own uniques through)
+                local dominated = row.TraitType ~= nil and not playerTraits[row.TraitType]
 
                 if not dominated then
                     local hasTech = ClaudeAI.HasTechPrereq(playerID, row.PrereqTech)
@@ -1841,8 +1943,8 @@ function ClaudeAI.GetCityBuildables(pCity, playerID)
     pcall(function()
         if GameInfo.Buildings then
             for row in GameInfo.Buildings() do
-                -- Skip wonders (IsWonder) and unique buildings (TraitType)
-                local dominated = row.IsWonder or row.TraitType ~= nil
+                -- Skip wonders (IsWonder) and unique buildings from OTHER civs
+                local dominated = row.IsWonder or (row.TraitType ~= nil and not playerTraits[row.TraitType])
 
                 if not dominated then
                     local hasTech = ClaudeAI.HasTechPrereq(playerID, row.PrereqTech)
@@ -1854,7 +1956,20 @@ function ClaudeAI.GetCityBuildables(pCity, playerID)
                     -- Check if city already has this building
                     local alreadyHas = ClaudeAI.CityHasBuilding(pCity, row.BuildingType)
 
-                    if hasTech and hasCivic and hasDistrict and not alreadyHas then
+                    -- Check if city has prerequisite buildings (e.g., Library before University)
+                    local hasPrereqBuildings = true
+                    if GameInfo.BuildingPrereqs then
+                        for prereqRow in GameInfo.BuildingPrereqs() do
+                            if prereqRow.Building == row.BuildingType then
+                                if not ClaudeAI.CityHasBuilding(pCity, prereqRow.PrereqBuilding) then
+                                    hasPrereqBuildings = false
+                                    break
+                                end
+                            end
+                        end
+                    end
+
+                    if hasTech and hasCivic and hasDistrict and not alreadyHas and hasPrereqBuildings then
                         table.insert(buildables.buildings, {
                             type = row.BuildingType,
                             cost = row.Cost,
@@ -1869,8 +1984,8 @@ function ClaudeAI.GetCityBuildables(pCity, playerID)
     pcall(function()
         if GameInfo.Districts then
             for row in GameInfo.Districts() do
-                -- Skip unique districts (TraitType) and special districts
-                local dominated = row.TraitType ~= nil
+                -- Skip unique districts from OTHER civs and special districts
+                local dominated = (row.TraitType ~= nil and not playerTraits[row.TraitType])
                     or row.DistrictType == "DISTRICT_CITY_CENTER"
                     or row.DistrictType == "DISTRICT_WONDER"
 
@@ -1881,8 +1996,9 @@ function ClaudeAI.GetCityBuildables(pCity, playerID)
                     -- Check if city already has this district
                     local alreadyHas = ClaudeAI.CityHasDistrict(pCity, row.DistrictType)
 
-                    -- Check population requirement for districts (1 district per 3 pop, roughly)
-                    -- This is approximate - actual formula is more complex
+                    -- Check population requirement for districts
+                    -- Civ6 formula: 1 slot at pop 1, +1 at pop 4, 7, 10... = 1 + floor((pop-1)/3)
+                    -- City Center doesn't count toward the specialty district limit
                     local districtCount = 0
                     pcall(function()
                         local pDistricts = pCity:GetDistricts()
@@ -1890,7 +2006,9 @@ function ClaudeAI.GetCityBuildables(pCity, playerID)
                             districtCount = pDistricts:GetNumDistricts()
                         end
                     end)
-                    local canBuildMore = (cityPopulation >= districtCount * 3) or districtCount == 0
+                    local specialtyCount = math.max(0, districtCount - 1)
+                    local slots = 1 + math.floor((cityPopulation - 1) / 3)
+                    local canBuildMore = specialtyCount < slots
 
                     if hasTech and hasCivic and not alreadyHas and canBuildMore then
                         table.insert(buildables.districts, {
@@ -2017,15 +2135,15 @@ function ClaudeAI.SerializePlayerState(playerID)
 
         -- GetCultureYield is UI-only, calculate from city yields instead
         pcall(function()
+            local cultureYieldIndex = 5  -- Default fallback
+            if GameInfo.Yields and GameInfo.Yields["YIELD_CULTURE"] then
+                cultureYieldIndex = GameInfo.Yields["YIELD_CULTURE"].Index
+            end
             local pCities = pPlayer:GetCities()
             if pCities and pCities.Members then
                 for _, pCity in pCities:Members() do
-                    local cityYields = pCity:GetYields()
-                    if cityYields and cityYields.GetYield then
-                        -- YieldTypes.CULTURE = 5 in Civ6
-                        local cityCulture = cityYields:GetYield(5) or 0
-                        culturePerTurn = culturePerTurn + cityCulture
-                    end
+                    local cityCulture = SafeGet(pCity, "GetYield", cultureYieldIndex) or 0
+                    culturePerTurn = culturePerTurn + cityCulture
                 end
             end
         end)
@@ -2211,10 +2329,11 @@ function ClaudeAI.SerializeDiplomacy(playerID)
             myTeamID = pPlayer:GetTeam()
         end)
 
-        -- Iterate through all players
-        for _, pOtherPlayer in ipairs(Players) do
+        -- Iterate through all alive major players
+        local aliveMajors = PlayerManager.GetAliveMajors()
+        for _, pOtherPlayer in ipairs(aliveMajors) do
             local otherID = pOtherPlayer:GetID()
-            if otherID ~= playerID and pOtherPlayer:IsAlive() and not pOtherPlayer:IsBarbarian() then
+            if otherID ~= playerID then
                 local otherInfo = {
                     id = otherID,
                     civName = "Unknown",
@@ -2438,14 +2557,15 @@ function ClaudeAI.GetAvailableCivics(playerID)
 
                             -- Calculate culture per turn from city yields
                             pcall(function()
+                                local cultureYieldIndex = 5  -- Default fallback
+                                if GameInfo.Yields and GameInfo.Yields["YIELD_CULTURE"] then
+                                    cultureYieldIndex = GameInfo.Yields["YIELD_CULTURE"].Index
+                                end
                                 local pCities = pPlayer:GetCities()
                                 if pCities and pCities.Members then
                                     for _, pCity in pCities:Members() do
-                                        local cityYields = pCity:GetYields()
-                                        if cityYields and cityYields.GetYield then
-                                            local cityCulture = cityYields:GetYield(5) or 0  -- CULTURE = 5
-                                            culturePerTurn = culturePerTurn + cityCulture
-                                        end
+                                        local cityCulture = SafeGet(pCity, "GetYield", cultureYieldIndex) or 0
+                                        culturePerTurn = culturePerTurn + cityCulture
                                     end
                                 end
                             end)
@@ -2510,12 +2630,12 @@ function ClaudeAI.GetAvailableCivics(playerID)
                 local hasCivic = pCulture:HasCivic(civicIndex)
                 if hasCivic then return end  -- Already researched
 
-                -- Check era requirement - civic's era must be <= player's era
+                -- Check era requirement - allow current era and next era (prereqs still gate progression)
                 local civicEra = civicInfo.EraType
                 if civicEra then
                     local civicEraIndex = eraIndices[civicEra] or 0
-                    if civicEraIndex > playerEraIndex then
-                        return  -- Civic is from a future era
+                    if civicEraIndex > playerEraIndex + 1 then
+                        return  -- Civic is from too far in the future
                     end
                 end
 
@@ -2613,104 +2733,6 @@ function ClaudeAI.GetAvailableGovernments(playerID)
     end
 
     return available
-end
-
--- Get current government and policy info for the player
-function ClaudeAI.GetGovernmentInfo(playerID)
-    local info = {
-        currentGovernment = nil,
-        policySlots = {},
-        availablePolicies = {},
-    }
-
-    -- Skip if GameInfo tables don't exist
-    if not GameInfo then
-        return info
-    end
-
-    local success, err = pcall(function()
-        local pPlayer = Players[playerID]
-        if not pPlayer then return end
-
-        local pCulture = pPlayer:GetCulture()
-        if not pCulture then return end
-
-        -- Current government
-        if pCulture.GetCurrentGovernment and GameInfo.Governments then
-            pcall(function()
-                local currentGovIndex = pCulture:GetCurrentGovernment()
-                if currentGovIndex and currentGovIndex >= 0 then
-                    for govInfo in GameInfo.Governments() do
-                        if govInfo and govInfo.Index == currentGovIndex then
-                            info.currentGovernment = govInfo.GovernmentType
-                            break
-                        end
-                    end
-                end
-            end)
-        end
-
-        -- Policy slots and current policies
-        if pCulture.GetNumPolicySlots and pCulture.GetSlotType and pCulture.GetSlotPolicy then
-            pcall(function()
-                local numSlots = pCulture:GetNumPolicySlots() or 0
-                for slotIndex = 0, numSlots - 1 do
-                    local slotType = pCulture:GetSlotType(slotIndex)
-                    local slotTypeName = "SLOT_WILDCARD"  -- Default
-                    if GameInfo.GovernmentSlots and GameInfo.GovernmentSlots[slotType] then
-                        slotTypeName = GameInfo.GovernmentSlots[slotType].GovernmentSlotType or "SLOT_WILDCARD"
-                    end
-
-                    local currentPolicyIndex = pCulture:GetSlotPolicy(slotIndex)
-                    local currentPolicyName = nil
-                    if currentPolicyIndex and currentPolicyIndex >= 0 and GameInfo.Policies then
-                        for policyInfo in GameInfo.Policies() do
-                            if policyInfo and policyInfo.Index == currentPolicyIndex then
-                                currentPolicyName = policyInfo.PolicyType
-                                break
-                            end
-                        end
-                    end
-
-                    table.insert(info.policySlots, {
-                        slotIndex = slotIndex,
-                        slotType = slotTypeName,
-                        currentPolicy = currentPolicyName,
-                    })
-                end
-            end)
-        end
-
-        -- Available policies (unlocked and not obsolete)
-        if GameInfo.Policies and pCulture.IsPolicyUnlocked then
-            pcall(function()
-                for policyInfo in GameInfo.Policies() do
-                    if policyInfo and policyInfo.PolicyType then
-                        local policyHash = policyInfo.Hash
-                        if not policyHash and GameInfo.Types and GameInfo.Types[policyInfo.PolicyType] then
-                            policyHash = GameInfo.Types[policyInfo.PolicyType].Hash
-                        end
-                        if policyHash then
-                            local isUnlocked = pCulture:IsPolicyUnlocked(policyHash)
-                            local isObsolete = pCulture.IsPolicyObsolete and pCulture:IsPolicyObsolete(policyHash)
-                            if isUnlocked and not isObsolete then
-                                table.insert(info.availablePolicies, {
-                                    policy = policyInfo.PolicyType,
-                                    slotType = policyInfo.GovernmentSlotType or "SLOT_WILDCARD",
-                                })
-                            end
-                        end
-                    end
-                end
-            end)
-        end
-    end)
-
-    if not success then
-        ClaudeAI.Log("ERROR in GetGovernmentInfo: " .. tostring(err))
-    end
-
-    return info
 end
 
 -- ============================================================================
@@ -3192,9 +3214,10 @@ function ActionHandlers.attack(playerID, action, pPlayer, isLocalPlayer)
 
         -- Fallback: For melee units, move to target tile triggers combat automatically
         -- In Civ6, melee combat is initiated by moving into the enemy tile
-        if UnitManager.MoveUnit then
+        -- Do NOT use this for ranged units - moving a ranged unit into an enemy wastes it
+        if UnitManager.MoveUnit and not isRanged then
             UnitManager.MoveUnit(pUnit, action.target_x, action.target_y)
-            ClaudeAI.Log("Executed attack via MoveUnit (fallback)")
+            ClaudeAI.Log("Executed melee attack via MoveUnit (fallback)")
             return
         end
 
@@ -3385,21 +3408,28 @@ function ActionHandlers.build(playerID, action, pPlayer, isLocalPlayer)
         local success, err = pcall(function()
             -- Use the appropriate queue method based on item type
             if itemType == "unit" then
-                local unitIndex = GameInfo.Units[itemName].Index
-                pBuildQueue:CreateIncompleteBuilding(unitIndex)
-                productionSet = true
+                if pBuildQueue.CreateIncompleteUnit then
+                    local unitIndex = GameInfo.Units[itemName].Index
+                    pBuildQueue:CreateIncompleteUnit(unitIndex)
+                    productionSet = true
+                else
+                    ClaudeAI.Log("WARNING: CreateIncompleteUnit not available, relying on UI request")
+                end
             elseif itemType == "building" then
                 local buildingIndex = GameInfo.Buildings[itemName].Index
                 pBuildQueue:CreateIncompleteBuilding(buildingIndex)
                 productionSet = true
             elseif itemType == "district" then
-                local districtIndex = GameInfo.Districts[itemName].Index
-                pBuildQueue:CreateIncompleteBuilding(districtIndex)
-                productionSet = true
+                -- Districts require plot coordinates; skip gameplay fallback (UI request handles this)
+                ClaudeAI.Log("WARNING: District production requires UI request (plot coords needed), skipping gameplay fallback")
             elseif itemType == "project" then
-                local projectIndex = GameInfo.Projects[itemName].Index
-                pBuildQueue:CreateIncompleteBuilding(projectIndex)
-                productionSet = true
+                if pBuildQueue.CreateIncompleteProject then
+                    local projectIndex = GameInfo.Projects[itemName].Index
+                    pBuildQueue:CreateIncompleteProject(projectIndex)
+                    productionSet = true
+                else
+                    ClaudeAI.Log("WARNING: CreateIncompleteProject not available, relying on UI request")
+                end
             end
         end)
         if not success then
@@ -3830,7 +3860,7 @@ function ClaudeAI.GetBuilderActions(pUnit, playerID)
         -- Get plot info
         local terrainType = pPlot:GetTerrainType()
         local featureType = pPlot:GetFeatureType()
-        local resourceType = pPlot:GetResourceType()
+        local resourceType = pPlot:GetResourceType(playerID)
         local improvementType = pPlot:GetImprovementType()
 
         -- Get terrain/feature/resource names for matching
@@ -3882,13 +3912,19 @@ function ClaudeAI.GetBuilderActions(pUnit, playerID)
         local pTechs = pPlayer:GetTechs()
         local pCulture = pPlayer:GetCulture()
 
+        -- Ensure lookup tables are built
+        if not ClaudeAI.ImprovementTerrains then
+            ClaudeAI.BuildLookupTables()
+        end
+
         if GameInfo.Improvements then
             for impRow in GameInfo.Improvements() do
                 local impType = impRow.ImprovementType
                 local canBuild = true
 
-                -- Skip city-specific or special improvements
-                if impRow.SpecificCivRequired or impRow.TraitType then
+                -- Skip unique improvements from OTHER civs
+                local playerTraits = ClaudeAI.CachedPlayerTraits or ClaudeAI.BuildPlayerTraitSet(playerID)
+                if impRow.TraitType and not playerTraits[impRow.TraitType] then
                     canBuild = false
                 end
 
@@ -3910,55 +3946,28 @@ function ClaudeAI.GetBuilderActions(pUnit, playerID)
                     end
                 end
 
-                -- Check valid terrains
-                if canBuild and GameInfo.Improvement_ValidTerrains then
-                    local hasValidTerrain = false
-                    local hasTerrainReq = false
-                    for row in GameInfo.Improvement_ValidTerrains() do
-                        if row.ImprovementType == impType then
-                            hasTerrainReq = true
-                            if row.TerrainType == terrainName then
-                                hasValidTerrain = true
-                                break
-                            end
-                        end
+                -- Check valid terrains (using pre-built lookup table)
+                if canBuild then
+                    local terrainReqs = ClaudeAI.ImprovementTerrains[impType]
+                    if terrainReqs and not (terrainName and terrainReqs[terrainName]) then
+                        canBuild = false
                     end
-                    if hasTerrainReq and not hasValidTerrain then canBuild = false end
                 end
 
-                -- Check valid features (some improvements require or work with features)
-                if canBuild and GameInfo.Improvement_ValidFeatures then
-                    local hasValidFeature = false
-                    local hasFeatureReq = false
-                    for row in GameInfo.Improvement_ValidFeatures() do
-                        if row.ImprovementType == impType then
-                            hasFeatureReq = true
-                            if row.FeatureType == featureName then
-                                hasValidFeature = true
-                                break
-                            end
-                        end
+                -- Check valid features (using pre-built lookup table)
+                if canBuild then
+                    local featureReqs = ClaudeAI.ImprovementFeatures[impType]
+                    if featureReqs and not (featureName and featureReqs[featureName]) then
+                        canBuild = false
                     end
-                    -- If improvement requires a feature but plot doesn't have it, can't build
-                    if hasFeatureReq and not hasValidFeature then canBuild = false end
                 end
 
-                -- Check valid resources (some improvements connect specific resources)
-                if canBuild and GameInfo.Improvement_ValidResources then
-                    local validForResource = false
-                    local hasResourceReq = false
-                    for row in GameInfo.Improvement_ValidResources() do
-                        if row.ImprovementType == impType then
-                            hasResourceReq = true
-                            if row.ResourceType == resourceName then
-                                validForResource = true
-                                break
-                            end
-                        end
+                -- Check valid resources (using pre-built lookup table)
+                if canBuild then
+                    local resourceReqs = ClaudeAI.ImprovementResources[impType]
+                    if resourceReqs and not (resourceName and resourceReqs[resourceName]) then
+                        canBuild = false
                     end
-                    -- Resource-specific improvements (like camps, mines for resources)
-                    -- should only show if resource matches
-                    if hasResourceReq and not validForResource then canBuild = false end
                 end
 
                 -- Skip if there's already an improvement (unless pillaged)
@@ -4314,23 +4323,17 @@ function ClaudeAI.GetUnitUpgradeInfo(pUnit, playerID)
             if not hasCivic then return end
         end
 
-        -- Calculate upgrade cost (base cost difference * modifier)
-        -- Civ6 formula: (TargetCost - CurrentCost) * UpgradeCostModifier
-        local baseCost = targetInfo.Cost - unitInfo.Cost
-        if baseCost < 0 then baseCost = 0 end
-
-        -- Apply discount from policies/abilities (simplified - assume base multiplier)
-        local cost = math.ceil(baseCost * 0.5)  -- 50% of production difference
-        if cost < 10 then cost = 10 end  -- Minimum cost
-
-        -- Check if player has enough gold
-        local pTreasury = pPlayer:GetTreasury()
-        local gold = pTreasury and pTreasury:GetGoldBalance() or 0
-
-        if gold >= cost then
+        -- Check if upgrade operation is actually available via game API
+        -- This accounts for gold cost, policies, era scaling, and all other modifiers
+        local canUpgrade = false
+        if UnitManager and UnitManager.CanStartOperation and UnitOperationTypes and UnitOperationTypes.UPGRADE then
+            canUpgrade = SafeCall(function()
+                return UnitManager.CanStartOperation(pUnit, UnitOperationTypes.UPGRADE, nil, true)
+            end, false)
+        end
+        if canUpgrade then
             result.canUpgrade = true
             result.upgradeType = upgradeTarget
-            result.cost = cost
         end
     end)
 
@@ -4523,42 +4526,39 @@ function ClaudeAI.GetCityCombatInfo(pCity, playerID)
             local range = result.range
             for dx = -range, range do
                 for dy = -range, range do
-                    local distance = math.abs(dx) + math.abs(dy)
-                    if distance > 0 and distance <= range then
-                        local checkX = cityX + dx
-                        local checkY = cityY + dy
-                        local pPlot = Map.GetPlot(checkX, checkY)
-
-                        if pPlot then
-                            -- Check for enemy units on this plot
-                            local unitCount = pPlot:GetUnitCount()
-                            for i = 0, unitCount - 1 do
-                                local pUnit = pPlot:GetUnit(i)
-                                if pUnit then
-                                    local ownerID = pUnit:GetOwner()
-                                    if ownerID ~= playerID then
-                                        -- Check if at war
-                                        local isEnemy = false
-                                        pcall(function()
-                                            if ownerID == 63 then  -- Barbarians
-                                                isEnemy = true
-                                            elseif pDiplomacy and pDiplomacy.IsAtWarWith then
-                                                isEnemy = pDiplomacy:IsAtWarWith(ownerID)
-                                            end
-                                        end)
-
-                                        if isEnemy then
-                                            local unitTypeName = ClaudeAI.GetUnitName(pUnit:GetType())
-                                            local damage = SafeGet(pUnit, "GetDamage") or 0
-                                            local maxDamage = SafeGet(pUnit, "GetMaxDamage") or 100
-
-                                            table.insert(result.targets, {
-                                                x = checkX,
-                                                y = checkY,
-                                                unitType = unitTypeName,
-                                                health = maxDamage - damage,
-                                            })
+                    local checkX = cityX + dx
+                    local checkY = cityY + dy
+                    local pPlot = Map.GetPlot(checkX, checkY)
+                    local distance = pPlot and Map.GetPlotDistance(cityX, cityY, checkX, checkY) or 0
+                    if distance > 0 and distance <= range and pPlot then
+                        -- Check for enemy units on this plot
+                        local unitCount = pPlot:GetUnitCount()
+                        for i = 0, unitCount - 1 do
+                            local pUnit = pPlot:GetUnit(i)
+                            if pUnit then
+                                local ownerID = pUnit:GetOwner()
+                                if ownerID ~= playerID then
+                                    -- Check if at war
+                                    local isEnemy = false
+                                    pcall(function()
+                                        if ownerID == 63 then  -- Barbarians
+                                            isEnemy = true
+                                        elseif pDiplomacy and pDiplomacy.IsAtWarWith then
+                                            isEnemy = pDiplomacy:IsAtWarWith(ownerID)
                                         end
+                                    end)
+
+                                    if isEnemy then
+                                        local unitTypeName = ClaudeAI.GetUnitName(pUnit:GetType())
+                                        local damage = SafeGet(pUnit, "GetDamage") or 0
+                                        local maxDamage = SafeGet(pUnit, "GetMaxDamage") or 100
+
+                                        table.insert(result.targets, {
+                                            x = checkX,
+                                            y = checkY,
+                                            unitType = unitTypeName,
+                                            health = maxDamage - damage,
+                                        })
                                     end
                                 end
                             end
@@ -5010,6 +5010,22 @@ function ActionHandlers.send_trade_route(playerID, action, pPlayer, isLocalPlaye
     local destCityID = action.destination_city_id
     local destOwnerID = action.destination_owner_id or playerID  -- Default to own city
 
+    -- Resolve destination coordinates from city if not explicitly provided
+    local destX = action.destination_x
+    local destY = action.destination_y
+    if (destX == nil or destY == nil) and CityManager and CityManager.GetCity then
+        local destCity = CityManager.GetCity(destOwnerID, destCityID)
+        if destCity then
+            destX = SafeGet(destCity, "GetX")
+            destY = SafeGet(destCity, "GetY")
+            ClaudeAI.Log("Resolved trade route destination coords from city: " .. tostring(destX) .. "," .. tostring(destY))
+        end
+    end
+    if destX == nil or destY == nil then
+        ClaudeAI.Log("ERROR: Could not resolve destination coordinates for trade route")
+        return false
+    end
+
     ClaudeAI.Log("Sending trade route to city " .. destCityID .. " (owner: " .. destOwnerID .. ")")
 
     local success, err = pcall(function()
@@ -5017,8 +5033,8 @@ function ActionHandlers.send_trade_route(playerID, action, pPlayer, isLocalPlaye
             if UnitOperationTypes.MAKE_TRADE_ROUTE then
                 local tParams = {}
                 -- Set destination city parameters
-                tParams[UnitOperationTypes.PARAM_X] = action.destination_x
-                tParams[UnitOperationTypes.PARAM_Y] = action.destination_y
+                tParams[UnitOperationTypes.PARAM_X] = destX
+                tParams[UnitOperationTypes.PARAM_Y] = destY
 
                 if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.MAKE_TRADE_ROUTE, nil, tParams) then
                     UnitManager.RequestOperation(pUnit, UnitOperationTypes.MAKE_TRADE_ROUTE, tParams)
@@ -5109,7 +5125,15 @@ function ActionHandlers.declare_war(playerID, action, pPlayer, isLocalPlayer)
         local success, err = pcall(function()
             local pDiplomacy = pPlayer:GetDiplomacy()
             if pDiplomacy and pDiplomacy.DeclareWarOn then
-                pDiplomacy:DeclareWarOn(targetPlayerID)
+                -- Look up casus belli hash for the war type
+                local casusBelliKey = "CASUS_BELLI_" .. warType
+                local casusBelliInfo = GameInfo.CasusBelli and GameInfo.CasusBelli[casusBelliKey]
+                if casusBelliInfo and warType ~= "SURPRISE" then
+                    local casusBelliHash = DB.MakeHash(casusBelliKey)
+                    pDiplomacy:DeclareWarOn(targetPlayerID, casusBelliHash)
+                else
+                    pDiplomacy:DeclareWarOn(targetPlayerID)
+                end
             end
         end)
         if not success then
@@ -5327,7 +5351,7 @@ function ClaudeAI.HandleResponse(playerID, actionJson)
                 local failCount = 0
 
                 for i, action in ipairs(reorderedActions) do
-                    ClaudeAI.Log("--- Action " .. i .. "/" .. #response.actions .. ": " .. (action.action or "unknown") .. " ---")
+                    ClaudeAI.Log("--- Action " .. i .. "/" .. #reorderedActions .. ": " .. (action.action or "unknown") .. " ---")
 
                     local success = ClaudeAI.ExecuteAction(playerID, action)
                     if success then
@@ -5478,6 +5502,9 @@ function ClaudeAI.ProcessTurn(playerID)
     ClaudeAI.Log("Processing turn for player " .. playerID)
     ClaudeAI.Log("========================================")
 
+    -- Cache player traits for this turn (used by buildable/improvement filters)
+    ClaudeAI.CachedPlayerTraits = ClaudeAI.BuildPlayerTraitSet(playerID)
+
     -- TEMPORARILY DISABLED - May be causing crashes
     -- local isLocalPlayer = (Game.GetLocalPlayer() == playerID)
     -- if isLocalPlayer then
@@ -5594,11 +5621,8 @@ function ClaudeAI.OnPlayerTurnStarted(playerID)
     -- Only auto-process if configured to do so
     if ClaudeAI.Config.autoProcessTurn then
         ClaudeAI.ProcessTurn(playerID)
-        -- Note: For async, NotifyTurnEnded is called after response is received
-        -- For sync, we call it here
-        if not ClaudeAI.AsyncState.isWaiting then
-            ClaudeAI.NotifyTurnEnded(playerID)
-        end
+        -- NotifyTurnEnded is called by ProcessTurn in all paths:
+        -- async callback, blocking path, and error path
     else
         ClaudeAI.Log("Auto-process disabled - waiting for manual trigger")
     end
@@ -5609,6 +5633,9 @@ function ClaudeAI.OnLoadGameViewStateDone()
 
     ClaudeAI.Log("Game view loaded - Claude will control local player")
     ClaudeAI.Log("Claude AI Enabled: " .. tostring(ClaudeAI.Config.enabled))
+
+    -- Build lookup tables for wonders and improvements (once at load)
+    ClaudeAI.BuildLookupTables()
 
     -- Scan for existing wonders (important when loading a save game)
     ClaudeAI.ScanExistingWonders()

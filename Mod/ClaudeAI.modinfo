@@ -7,6 +7,15 @@
         <CompatibleVersions>2.0</CompatibleVersions>
     </Properties>
 
+    <FrontEndActions>
+        <AddUserInterfaces id="ClaudeAI_SetupUI">
+            <Properties>
+                <Context>StagingRoom</Context>
+            </Properties>
+            <File>ClaudeAI_SetupUI.xml</File>
+        </AddUserInterfaces>
+    </FrontEndActions>
+
     <InGameActions>
         <!-- Gameplay logic script -->
         <AddGameplayScripts id="ClaudeAI_Scripts">
@@ -30,5 +39,7 @@
         <File>ClaudeAI.lua</File>
         <File>UI/ClaudeIndicator.xml</File>
         <File>UI/ClaudeIndicator.lua</File>
+        <File>ClaudeAI_SetupUI.xml</File>
+        <File>ClaudeAI_SetupUI.lua</File>
     </Files>
 </Mod>

@@ -21,6 +21,7 @@ local PROPERTY_KEYS = {
     REQUEST_POLICY = "ClaudeAI_RequestPolicy",
     REQUEST_DIPLOMACY = "ClaudeAI_RequestDiplomacy",
     REQUEST_PLACE_DISTRICT = "ClaudeAI_RequestPlaceDistrict",
+    REQUEST_PURCHASE = "ClaudeAI_RequestPurchase",
     REQUEST_DISMISS_NOTIFICATIONS = "ClaudeAI_DismissNotifications",
 
     -- Flags
@@ -31,10 +32,6 @@ local PROPERTY_KEYS = {
 local EXPOSED_MEMBER_KEYS = {
     GOVERNMENT_INFO = "ClaudeAI_GovernmentInfo",
     CIVIC_PROGRESS = "ClaudeAI_CivicProgress",
-    FOUND_CITY_REQUEST = "ClaudeAI_FoundCityRequest",
-    FOUND_CITY_RESULT = "ClaudeAI_FoundCityResult",
-    PRODUCTION_REQUEST = "ClaudeAI_ProductionRequest",
-    PRODUCTION_RESULT = "ClaudeAI_ProductionResult",
     IS_THINKING = "ClaudeAI_IsThinking",
 }
 
@@ -67,7 +64,7 @@ local State = {
     claudeCivName = "",
 
     -- Request tracking (to avoid duplicate processing)
-    processedEndTurn = false,
+    processedEndTurn = 0,
     lastRequests = {
         research = "",
         civic = "",
@@ -76,6 +73,7 @@ local State = {
         policy = "",
         diplomacy = "",
         districtPlacement = "",
+        purchase = "",
         dismissNotification = 0,
     },
 
@@ -156,7 +154,8 @@ local function TableToJSON(tbl)
     else
         for k, v in pairs(tbl) do
             local key = type(k) == "string" and k or tostring(k)
-            table.insert(result, '"' .. key .. '":' .. TableToJSON(v))
+            local escaped = key:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n'):gsub('\r', '\\r'):gsub('\t', '\\t')
+            table.insert(result, '"' .. escaped .. '":' .. TableToJSON(v))
         end
         return "{" .. table.concat(result, ",") .. "}"
     end
@@ -374,6 +373,50 @@ local function ExecuteProduction(playerID, cityID, productionType, productionHas
     end)
 end
 
+local function ExecutePurchase(playerID, cityID, currency, itemName)
+    Log("Executing purchase - item=" .. tostring(itemName) .. " currency=" .. tostring(currency))
+
+    local pPlayer = Players[playerID]
+    if not pPlayer then
+        Log("ERROR: Player not found: " .. tostring(playerID))
+        return
+    end
+    local pCity = pPlayer:GetCities():FindID(cityID)
+    if not pCity then
+        Log("ERROR: City not found: " .. tostring(cityID))
+        return
+    end
+
+    SafeExecute("Purchase", function()
+        local pBuildQueue = pCity:GetBuildQueue()
+        if not pBuildQueue then
+            Log("ERROR: No build queue for city")
+            return
+        end
+
+        local unitInfo = GameInfo.Units[itemName]
+        local buildingInfo = GameInfo.Buildings[itemName]
+
+        if unitInfo then
+            if currency == "gold" then
+                pBuildQueue:PurchaseUnit(unitInfo.Index)
+            else
+                pBuildQueue:PurchaseUnitWithFaith(unitInfo.Index)
+            end
+            Log("Purchased unit: " .. itemName .. " with " .. currency)
+        elseif buildingInfo then
+            if currency == "gold" then
+                pBuildQueue:PurchaseBuilding(buildingInfo.Index)
+            else
+                pBuildQueue:PurchaseBuildingWithFaith(buildingInfo.Index)
+            end
+            Log("Purchased building: " .. itemName .. " with " .. currency)
+        else
+            Log("ERROR: Item not found in GameInfo: " .. tostring(itemName))
+        end
+    end)
+end
+
 local function ExecuteDistrictPlacement(playerID, cityID, districtHash, plotX, plotY)
     Log("Executing district placement - hash=" .. tostring(districtHash) .. " at (" .. tostring(plotX) .. "," .. tostring(plotY) .. ")")
 
@@ -480,15 +523,6 @@ end
 -- DIPLOMACY HANDLERS
 -- ============================================================================
 
-local function DismissLeaderScreen()
-    SafeExecute("DismissLeaderScreen", function()
-        Log("Dismissing leader screen")
-        if Events and Events.HideLeaderScreen then
-            Events.HideLeaderScreen()
-        end
-    end)
-end
-
 local function CloseDiplomacySessions()
     SafeExecute("CloseDiplomacySessions", function()
         local localPlayerID = Game.GetLocalPlayer()
@@ -503,9 +537,10 @@ local function CloseDiplomacySessions()
             if pLocalPlayer then
                 local pDiplomacy = pLocalPlayer:GetDiplomacy()
                 if pDiplomacy then
-                    for _, pOtherPlayer in ipairs(Players) do
+                    local aliveMajors = PlayerManager.GetAliveMajors()
+                    for _, pOtherPlayer in ipairs(aliveMajors) do
                         local otherID = pOtherPlayer:GetID()
-                        if otherID ~= localPlayerID and pOtherPlayer:IsAlive() then
+                        if otherID ~= localPlayerID then
                             local sessionID = DiplomacyManager.FindOpenSessionID(localPlayerID, otherID)
                             if sessionID and sessionID >= 0 then
                                 Log("Closing diplomacy session " .. sessionID .. " with player " .. otherID)
@@ -516,6 +551,13 @@ local function CloseDiplomacySessions()
                 end
             end
         end
+    end)
+end
+
+local function DismissLeaderScreen()
+    SafeExecute("DismissLeaderScreen", function()
+        Log("Dismissing leader screen")
+        CloseDiplomacySessions()
     end)
 end
 
@@ -719,12 +761,20 @@ end
 
 local function UpdateGovernmentInfoProperty(playerID)
     local info = GatherGovernmentInfo(playerID)
+
+    -- Cap available policies to prevent oversized JSON (instead of truncating the string)
+    local MAX_POLICIES = 30
+    if info.availablePolicies and #info.availablePolicies > MAX_POLICIES then
+        Log("WARNING: Capping availablePolicies from " .. #info.availablePolicies .. " to " .. MAX_POLICIES)
+        local capped = {}
+        for i = 1, MAX_POLICIES do capped[i] = info.availablePolicies[i] end
+        info.availablePolicies = capped
+    end
+
     local jsonStr = TableToJSON(info)
 
-    -- Truncate if too long
     if #jsonStr > 4000 then
-        Log("WARNING: Government info JSON truncated")
-        jsonStr = jsonStr:sub(1, 4000)
+        Log("WARNING: Government info JSON is " .. #jsonStr .. " chars (exceeds 4000)")
     end
 
     if ExposedMembers then
@@ -827,11 +877,11 @@ local RequestHandlers = {
         key = PROPERTY_KEYS.REQUEST_END_TURN,
         lastValue = function() return State.processedEndTurn end,
         setLastValue = function(v) State.processedEndTurn = v end,
-        resetValue = false,
+        resetValue = 0,
         isNumeric = true,
         handler = function(value)
-            if value == 1 and not State.processedEndTurn then
-                State.processedEndTurn = true
+            if value == 1 and State.processedEndTurn == 0 then
+                State.processedEndTurn = 1
                 Log("Found end turn request")
                 ExecuteEndTurn()
             end
@@ -926,6 +976,19 @@ local RequestHandlers = {
             end
         end,
     },
+    {
+        key = PROPERTY_KEYS.REQUEST_PURCHASE,
+        lastValue = function() return State.lastRequests.purchase end,
+        setLastValue = function(v) State.lastRequests.purchase = v end,
+        resetValue = "",
+        handler = function(value)
+            Log("Found purchase request: " .. value)
+            local playerID, cityID, currency, itemName = value:match("([^,]+),([^,]+),([^,]+),([^,]+)")
+            if playerID and cityID and currency and itemName then
+                ExecutePurchase(tonumber(playerID), tonumber(cityID), currency, itemName)
+            end
+        end,
+    },
 }
 
 local function ProcessUIActionRequests()
@@ -960,59 +1023,8 @@ end
 -- ============================================================================
 
 local function ProcessGameplayRequests()
-    if not ExposedMembers then return end
-
-    -- Process city founding requests
-    local foundRequest = ExposedMembers[EXPOSED_MEMBER_KEYS.FOUND_CITY_REQUEST]
-    if foundRequest then
-        ExposedMembers[EXPOSED_MEMBER_KEYS.FOUND_CITY_REQUEST] = nil
-        Log("Processing city founding request")
-
-        if UnitManager and foundRequest.playerID and foundRequest.unitID then
-            local pUnit = UnitManager.GetUnit(foundRequest.playerID, foundRequest.unitID)
-            if pUnit and UnitManager.RequestOperation then
-                local success = SafeExecute("FoundCity", function()
-                    UnitManager.RequestOperation(pUnit, UnitOperationTypes.FOUND_CITY)
-                end)
-                ExposedMembers[EXPOSED_MEMBER_KEYS.FOUND_CITY_RESULT] = { success = success }
-                if success then
-                    Log("City founding request sent!")
-                end
-            end
-        end
-    end
-
-    -- Process production requests (legacy path)
-    local prodRequest = ExposedMembers[EXPOSED_MEMBER_KEYS.PRODUCTION_REQUEST]
-    if prodRequest then
-        ExposedMembers[EXPOSED_MEMBER_KEYS.PRODUCTION_REQUEST] = nil
-        Log("Processing production request")
-
-        if CityManager and prodRequest.playerID and prodRequest.cityID then
-            local pCity = CityManager.GetCity(prodRequest.playerID, prodRequest.cityID)
-            if pCity and CityManager.RequestCommand and CityCommandTypes and CityCommandTypes.PRODUCE then
-                local tParameters = {}
-                local typeMap = {
-                    unit = "UnitType",
-                    building = "BuildingType",
-                    district = "DistrictType",
-                    project = "ProjectType",
-                }
-                local paramName = typeMap[prodRequest.itemType]
-                if paramName then
-                    tParameters[paramName] = prodRequest.itemIndex
-                end
-
-                local success = SafeExecute("Production", function()
-                    CityManager.RequestCommand(pCity, CityCommandTypes.PRODUCE, tParameters)
-                end)
-                if success then
-                    Log("Production request sent!")
-                    ExposedMembers[EXPOSED_MEMBER_KEYS.PRODUCTION_RESULT] = { success = true }
-                end
-            end
-        end
-    end
+    -- No-op: ExposedMembers-based city founding and production requests
+    -- have been replaced by Game.SetProperty polling in ProcessUIActionRequests
 end
 
 -- ============================================================================
@@ -1031,6 +1043,20 @@ local function CheckThinkingStatus()
             ShowThinkingIndicator(false)
             UpdateStatusLabel("[ICON_Capital] Claude: " .. State.claudeCivName)
             State.turnEnded = false
+        end
+    end
+
+    -- Poll for player info (fallback if LuaEvent didn't fire cross-context)
+    if State.claudePlayerID < 0 then
+        local playerInfo = GetGameProperty("ClaudeAI_PlayerInfo")
+        if playerInfo and type(playerInfo) == "string" and playerInfo ~= "" then
+            local pid, civName, leaderName = playerInfo:match("([^,]+),([^,]+),([^,]+)")
+            if pid then
+                State.claudePlayerID = tonumber(pid)
+                State.claudeCivName = FormatDisplayName(civName, "CIVILIZATION_")
+                UpdateStatusLabel("[ICON_Capital] Claude: " .. State.claudeCivName)
+                Log("Player info received via polling: " .. tostring(civName))
+            end
         end
     end
 
@@ -1120,6 +1146,18 @@ local function OnDiplomacyMeet(firstPlayer, secondPlayer)
     end
 end
 
+local function OnLeaderPopup(playerID)
+    local localPlayerID = Game.GetLocalPlayer()
+    if not localPlayerID or localPlayerID < 0 then return end
+    if localPlayerID == playerID then
+        Log("Leader popup detected for player " .. tostring(playerID))
+        if GetGameProperty(PROPERTY_KEYS.AUTO_DISMISS_DIPLOMACY) == 1 then
+            Log("Auto-dismissing leader popup")
+            DismissLeaderScreen()
+        end
+    end
+end
+
 local function OnLoadGameViewStateDone()
     Log("Game view loaded")
 
@@ -1174,8 +1212,6 @@ local function Initialize()
         ExposedMembers = {}
     end
     ExposedMembers[EXPOSED_MEMBER_KEYS.IS_THINKING] = false
-    ExposedMembers[EXPOSED_MEMBER_KEYS.FOUND_CITY_REQUEST] = nil
-    ExposedMembers[EXPOSED_MEMBER_KEYS.PRODUCTION_REQUEST] = nil
 
     -- Register LuaEvents
     if LuaEvents then
@@ -1212,7 +1248,7 @@ local function Initialize()
             Log("Registered DiplomacyMeet handler")
         end
         if Events.LeaderPopup then
-            Events.LeaderPopup.Add(OnDiplomacyMeet)
+            Events.LeaderPopup.Add(OnLeaderPopup)
             Log("Registered LeaderPopup handler")
         end
     end
