@@ -137,7 +137,7 @@ Diplomacy state includes:
 - `metPlayers`: Array with `weDenounced`, `theyDenouncedUs`, `turnsUntilFormalWar`, `canDeclareFormally`, `canDeclareWar`
 - `atWarWith`, `hasOpenBorders`: Player ID arrays
 
-Passability checking: `IsPlotReachable` validates mountain tunnels (Chemistry tech) and ocean tiles (Cartography tech).
+Passability checking: `IsPlotReachable` validates mountain crossings (only via a built Mountain Tunnel improvement, which requires the Chemistry tech), land-unit embarkation onto coast (Shipbuilding tech), and ocean tiles (Cartography tech).
 
 ---
 

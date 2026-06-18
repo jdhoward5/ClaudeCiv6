@@ -420,6 +420,9 @@ function ClaudeAI.ClearUIRequestProperties()
         Game.SetProperty(PROPERTY_KEYS.REQUEST_PRODUCTION, "")
         Game.SetProperty(PROPERTY_KEYS.REQUEST_GOVERNMENT, "")
         Game.SetProperty(PROPERTY_KEYS.REQUEST_POLICY, "")
+        Game.SetProperty(PROPERTY_KEYS.REQUEST_DIPLOMACY, "")
+        Game.SetProperty(PROPERTY_KEYS.REQUEST_PLACE_DISTRICT, "")
+        Game.SetProperty(PROPERTY_KEYS.REQUEST_PURCHASE, "")
         Game.SetProperty(PROPERTY_KEYS.DISMISS_NOTIFICATIONS, 0)
         ClaudeAI.Log("Cleared UI request properties")
     end
@@ -853,6 +856,23 @@ function ClaudeAI.DecodeSingleAction(jsonStr)
     result.reason = jsonStr:match('"reason"%s*:%s*"([^"]+)"')
     result.error = jsonStr:match('"error"%s*:%s*"([^"]+)"')
 
+    -- Diplomacy fields
+    result.target_player = tonumber(jsonStr:match('"target_player"%s*:%s*(-?%d+)'))
+    result.war_type = jsonStr:match('"war_type"%s*:%s*"([^"]+)"')
+    result.response = jsonStr:match('"response"%s*:%s*"([^"]+)"')
+
+    -- Type-name fields for district placement, improvements, promotions, purchases
+    result.district = jsonStr:match('"district"%s*:%s*"([^"]+)"')
+    result.improvement = jsonStr:match('"improvement"%s*:%s*"([^"]+)"')
+    result.promotion = jsonStr:match('"promotion"%s*:%s*"([^"]+)"')
+    result.currency = jsonStr:match('"currency"%s*:%s*"([^"]+)"')
+
+    -- Trade route destination fields
+    result.destination_city_id = tonumber(jsonStr:match('"destination_city_id"%s*:%s*(%d+)'))
+    result.destination_owner_id = tonumber(jsonStr:match('"destination_owner_id"%s*:%s*(-?%d+)'))
+    result.destination_x = tonumber(jsonStr:match('"destination_x"%s*:%s*(-?%d+)'))
+    result.destination_y = tonumber(jsonStr:match('"destination_y"%s*:%s*(-?%d+)'))
+
     -- Strategy and tactical notes (can contain escaped characters)
     result.strategy_notes = jsonStr:match('"strategy_notes"%s*:%s*"([^"]*)"')
     result.tactical_notes = jsonStr:match('"tactical_notes"%s*:%s*"([^"]*)"')
@@ -899,18 +919,34 @@ function ClaudeAI.DecodeJSON(jsonStr)
         -- Find the array content between [ and ]
         local arrayStart = jsonStr:find('%[', actionsArrayStart)
         if arrayStart then
-            -- Find matching closing bracket (handle nested objects)
+            -- Find matching closing bracket (handle nested objects/arrays).
+            -- Must be string-aware: a '[' or ']' inside a quoted value (e.g. a
+            -- note like "move to [10,15]") would otherwise corrupt the depth count
+            -- and truncate the actions array.
             local depth = 0
             local arrayEnd = nil
+            local inString = false
             for i = arrayStart, #jsonStr do
                 local char = jsonStr:sub(i, i)
-                if char == '[' then
-                    depth = depth + 1
-                elseif char == ']' then
-                    depth = depth - 1
-                    if depth == 0 then
-                        arrayEnd = i
-                        break
+                if char == '"' then
+                    local backslashCount = 0
+                    local checkPos = i - 1
+                    while checkPos >= 1 and jsonStr:sub(checkPos, checkPos) == '\\' do
+                        backslashCount = backslashCount + 1
+                        checkPos = checkPos - 1
+                    end
+                    if backslashCount % 2 == 0 then  -- Even = unescaped quote
+                        inString = not inString
+                    end
+                elseif not inString then
+                    if char == '[' then
+                        depth = depth + 1
+                    elseif char == ']' then
+                        depth = depth - 1
+                        if depth == 0 then
+                            arrayEnd = i
+                            break
+                        end
                     end
                 end
             end
@@ -1075,8 +1111,10 @@ function ClaudeAI.SerializeUnit(pUnit)
         local range = SafeGet(pUnit, "GetRange") or 0
         local charges = SafeGet(pUnit, "GetBuildCharges") or 0  -- Can throw "Not Implemented" for non-builder units
 
-        -- Check if this is a settler and can found city at current location
-        local isSettler = unitTypeName == "Settler" or (unitInfo and unitInfo.FoundCity)
+        -- Check if this is a settler and can found city at current location.
+        -- unitTypeName is the full UnitType (e.g. "UNIT_SETTLER"); the FoundCity
+        -- column also covers civ-unique settler replacements.
+        local isSettler = unitTypeName == "UNIT_SETTLER" or (unitInfo and unitInfo.FoundCity)
         local canFoundCity = false
         local canFoundCityHere = false
 
@@ -3011,16 +3049,17 @@ function ActionHandlers.move_unit(playerID, action, pPlayer, isLocalPlayer)
 
         -- Domain constants: DOMAIN_LAND = 0, DOMAIN_SEA = 1, DOMAIN_AIR = 2
         if unitDomain == 0 and isWater then  -- Land unit trying to enter water
-            -- Check if player has Sailing tech for embarkation (coast)
-            local hasSailing = false
+            -- Check if player has Shipbuilding tech for embarkation (coast)
+            local hasEmbark = false
             local hasCartography = false
             pcall(function()
                 local pTechs = pPlayer:GetTechs()
                 if pTechs and pTechs.HasTech then
-                    -- TECH_SAILING enables embarkation on coast
-                    local sailingInfo = GameInfo.Technologies["TECH_SAILING"]
-                    if sailingInfo then
-                        hasSailing = pTechs:HasTech(sailingInfo.Index)
+                    -- TECH_SHIPBUILDING enables land-unit embarkation onto coast.
+                    -- (Sailing only unlocks the Galley and lets Builders embark.)
+                    local embarkInfo = GameInfo.Technologies["TECH_SHIPBUILDING"]
+                    if embarkInfo then
+                        hasEmbark = pTechs:HasTech(embarkInfo.Index)
                     end
                     -- TECH_CARTOGRAPHY enables ocean crossing
                     local cartoInfo = GameInfo.Technologies["TECH_CARTOGRAPHY"]
@@ -3031,18 +3070,18 @@ function ActionHandlers.move_unit(playerID, action, pPlayer, isLocalPlayer)
             end)
 
             if isOcean then
-                -- Ocean requires both Sailing (embark) and Cartography (ocean crossing)
-                if not hasSailing then
-                    ClaudeAI.Log("Target plot (" .. x .. "," .. y .. ") is ocean - land unit cannot embark (no Sailing tech)")
+                -- Ocean requires both Shipbuilding (embark) and Cartography (ocean crossing)
+                if not hasEmbark then
+                    ClaudeAI.Log("Target plot (" .. x .. "," .. y .. ") is ocean - land unit cannot embark (no Shipbuilding tech)")
                     return false, "ocean without embark"
                 elseif not hasCartography then
                     ClaudeAI.Log("Target plot (" .. x .. "," .. y .. ") is ocean - land unit cannot cross ocean (no Cartography tech)")
                     return false, "ocean without cartography"
                 end
             else
-                -- Coast only requires Sailing
-                if not hasSailing then
-                    ClaudeAI.Log("Target plot (" .. x .. "," .. y .. ") is coast - land unit cannot embark (no Sailing tech)")
+                -- Coast only requires Shipbuilding
+                if not hasEmbark then
+                    ClaudeAI.Log("Target plot (" .. x .. "," .. y .. ") is coast - land unit cannot embark (no Shipbuilding tech)")
                     return false, "coast without embark"
                 end
             end
