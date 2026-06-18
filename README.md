@@ -1,10 +1,12 @@
 # Civ6 Claude AI
 
-Play Civilization VI against Claude AI. This mod replaces the built-in AI with Claude, allowing it to make strategic decisions about unit movement, city production, research, diplomacy, and more.
+Watch Claude play Civilization VI. This mod hands Claude control of **your own (local human) civilization** — it makes the strategic decisions for your seat: unit movement, city production, research, diplomacy, and more.
+
+> **Note:** Claude controls the local human player (player 0), not a separate AI opponent. This is intentional — the Civ6 Lua/modding API does not expose enough control to reliably drive a built-in AI player, so the mod takes over the human seat instead. You set up a game as normal and Claude plays it for you.
 
 ## Demo
 
-Claude controls a civilization and plays full turns - managing cities, moving units, researching technologies, and engaging in diplomacy.
+Claude takes over your civilization and plays full turns - managing cities, moving units, researching technologies, and engaging in diplomacy.
 
 ```
 [ClaudeAI] AI Turn Started for Player 1
@@ -80,7 +82,7 @@ Edit `ClaudeAI.lua` to customize behavior:
 
 ```lua
 ClaudeAI.Config = {
-    controlledPlayerID = -1,  -- -1 = auto-detect first AI player
+    controlledPlayerID = -1,  -- -1 = auto-detect the local (human) player
     enabled = true,
     debugLogging = true,
 }

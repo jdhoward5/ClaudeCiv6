@@ -3452,7 +3452,12 @@ function ActionHandlers.build(playerID, action, pPlayer, isLocalPlayer)
                     pBuildQueue:CreateIncompleteUnit(unitIndex)
                     productionSet = true
                 else
-                    ClaudeAI.Log("WARNING: CreateIncompleteUnit not available, relying on UI request")
+                    -- Expected: this gameplay-context method isn't exposed, so unit
+                    -- production goes through the UI request path. Log once, not per build.
+                    if not ClaudeAI._warnedNoCreateUnit then
+                        ClaudeAI._warnedNoCreateUnit = true
+                        ClaudeAI.Log("INFO: CreateIncompleteUnit unavailable in gameplay context; using UI request for unit production (logged once)")
+                    end
                 end
             elseif itemType == "building" then
                 local buildingIndex = GameInfo.Buildings[itemName].Index
@@ -3754,13 +3759,12 @@ function ActionHandlers.fortify(playerID, action, pPlayer, isLocalPlayer)
     end
     ClaudeAI.Log("Fortifying unit " .. action.unit_id)
     local success, err = pcall(function()
-        -- Try FORTIFY operation if available
-        if UnitOperationTypes.FORTIFY then
-            if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.FORTIFY, nil, nil) then
-                UnitManager.RequestOperation(pUnit, UnitOperationTypes.FORTIFY, nil)
-                ClaudeAI.Log("Unit fortified via FORTIFY operation")
-                return
-            end
+        -- Fortify is a unit COMMAND in Civ6, not an operation. Use RequestCommand
+        -- with UnitCommandTypes.FORTIFY (the operation-based path throws nil here).
+        if UnitManager.RequestCommand and UnitCommandTypes and UnitCommandTypes.FORTIFY then
+            UnitManager.RequestCommand(pUnit, UnitCommandTypes.FORTIFY)
+            ClaudeAI.Log("Unit fortified via FORTIFY command")
+            return
         end
         -- Fallback: just finish moves (basic fortify behavior)
         if UnitManager.FinishMoves then
@@ -5392,7 +5396,15 @@ function ClaudeAI.HandleResponse(playerID, actionJson)
                 for i, action in ipairs(reorderedActions) do
                     ClaudeAI.Log("--- Action " .. i .. "/" .. #reorderedActions .. ": " .. (action.action or "unknown") .. " ---")
 
-                    local success = ClaudeAI.ExecuteAction(playerID, action)
+                    -- pcall so a throwing handler is logged with its action and the
+                    -- turn continues (collects all errors in one run; a missing
+                    -- completion line pinpoints a hang to this action).
+                    local ok, success = pcall(ClaudeAI.ExecuteAction, playerID, action)
+                    if not ok then
+                        ClaudeAI.Log("[ACTION ERROR] " .. (action.action or "unknown") .. " threw: " .. tostring(success))
+                        success = false
+                    end
+                    ClaudeAI.Log("--- Action " .. i .. " (" .. (action.action or "unknown") .. ") -> " .. tostring(success) .. " ---")
                     if success then
                         successCount = successCount + 1
                     else
@@ -5433,6 +5445,22 @@ function ClaudeAI.PollForResponse()
 
     -- Poll the C++ side
     local status, response = CheckClaudeAPIResponse()
+
+    -- DIAGNOSTIC heartbeat: proves the poll loop is still alive and records the last
+    -- status seen before any freeze. Always logs non-pending transitions; throttles
+    -- "pending" to ~1s so it doesn't spam. If the log goes silent after a [POLL HB]
+    -- line, the freeze is at/after that poll (event stopped, or CheckClaudeAPIResponse
+    -- / response handling hung).
+    do
+        local nowClock = os.clock()
+        if status ~= "pending" or ClaudeAI.AsyncState.lastHeartbeat == nil
+           or (nowClock - ClaudeAI.AsyncState.lastHeartbeat) >= 1.0 then
+            ClaudeAI.AsyncState.lastHeartbeat = nowClock
+            ClaudeAI.Log("[POLL HB] poll#" .. tostring(ClaudeAI.AsyncState.pollCount + 1)
+                .. " status=" .. tostring(status)
+                .. " elapsed=" .. string.format("%.1f", nowClock - ClaudeAI.AsyncState.startTime) .. "s")
+        end
+    end
 
     -- Handle "ready_long" status - response stored in Game property due to 512 byte limit
     if status == "ready_long" then
@@ -5521,10 +5549,19 @@ function ClaudeAI.StartPolling(playerID)
     ClaudeAI.AsyncState.playerID = playerID
     ClaudeAI.AsyncState.pollCount = 0
     ClaudeAI.AsyncState.startTime = os.clock()
+    ClaudeAI.AsyncState.lastHeartbeat = nil
 
-    -- Create the poll handler
+    -- Create the poll handler. Wrap in pcall: if PollForResponse ever throws, an
+    -- uncaught error here can silently kill the GameCoreEventPublishComplete handler,
+    -- which would stop polling and hang the turn forever. Catch + log instead, and
+    -- stop cleanly so the turn can end rather than freeze.
     ClaudeAI.AsyncState.pollHandler = function()
-        ClaudeAI.PollForResponse()
+        local ok, err = pcall(ClaudeAI.PollForResponse)
+        if not ok then
+            ClaudeAI.Log("[POLL ERROR] PollForResponse threw: " .. tostring(err))
+            ClaudeAI.StopPolling()
+            ClaudeAI.NotifyTurnEnded(ClaudeAI.AsyncState.playerID)
+        end
     end
 
     -- Register for frequent updates
@@ -5765,14 +5802,8 @@ function ClaudeAI.OnLoadGameViewStateDone()
         Events.PlayerTurnStarted.Add(ClaudeAI.OnPlayerTurnStarted)
         print("[ClaudeAI] Registered PlayerTurnStarted handler")
     else
-        print("[ClaudeAI] WARNING: Events.PlayerTurnStarted not available")
-        -- Debug: List available events
-        print("[ClaudeAI] DEBUG: Available events in Events table:")
-        if Events then
-            for key, value in pairs(Events) do
-                print("[ClaudeAI] DEBUG: Events." .. tostring(key) .. " = " .. tostring(value))
-            end
-        end
+        -- Expected in the gameplay context; turn detection uses fallback events.
+        print("[ClaudeAI] Events.PlayerTurnStarted not available; using fallback turn detection")
         -- Try GameEvents instead
         if GameEvents and GameEvents.PlayerTurnStarted then
             GameEvents.PlayerTurnStarted.Add(ClaudeAI.OnPlayerTurnStarted)

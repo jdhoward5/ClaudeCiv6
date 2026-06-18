@@ -185,7 +185,7 @@ Mods/ClaudeAI/
 4. **Configure (optional):** Edit `ClaudeAI.lua`:
    ```lua
    ClaudeAI.Config = {
-       controlledPlayerID = -1,  -- -1 = auto-detect first AI
+       controlledPlayerID = -1,  -- -1 = auto-detect the local (human) player
        enabled = true,
        debugLogging = true,
    }
