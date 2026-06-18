@@ -35,8 +35,10 @@ namespace
     constexpr const char* kApiHost = "api.anthropic.com";
     constexpr const char* kApiPath = "/v1/messages";
     constexpr const char* kApiVersion = "2023-06-01";
-    constexpr const char* kDefaultModel = "claude-sonnet-4-5-20250929";
-    constexpr int kDefaultMaxTokens = 4096;
+    // Default to the strongest current model for high-quality strategic play.
+    // Override at runtime with the CLAUDE_MODEL environment variable.
+    constexpr const char* kDefaultModel = "claude-opus-4-8";
+    constexpr int kDefaultMaxTokens = 8192;
 
     // Logging limits
     constexpr size_t kMaxJsonPreviewLength = 512;
@@ -44,6 +46,21 @@ namespace
 
     // HTTP status codes
     constexpr DWORD kHttpStatusOK = 200;
+    constexpr DWORD kHttpStatusTooManyRequests = 429;
+    constexpr DWORD kHttpStatusOverloaded = 529;
+
+    // Retry policy for transient API failures (network errors, 429, 5xx, 529).
+    // The game plays many turns; a transient failure should not silently end one.
+    constexpr int kMaxHttpAttempts = 4;
+    constexpr DWORD kRetryBaseDelayMs = 1000;
+    constexpr DWORD kRetryMaxDelayMs = 8000;
+
+    // WinHTTP timeouts (milliseconds). Generous receive timeout: a large game
+    // state plus a capable model can take a while to respond.
+    constexpr int kResolveTimeoutMs = 10000;
+    constexpr int kConnectTimeoutMs = 15000;
+    constexpr int kSendTimeoutMs = 30000;
+    constexpr int kReceiveTimeoutMs = 180000;
 }
 
 // ============================================================================
@@ -244,6 +261,28 @@ std::string ExtractJsonFromResponse(const std::string& content)
     return trimmed;
 }
 
+/// Extract the assistant's text from a Claude API response.
+/// Iterates content blocks and returns the first "text" block, so it stays
+/// correct even if a non-text block (e.g. thinking) precedes the text.
+std::string ExtractAssistantText(const json& responseJson)
+{
+    if (!responseJson.contains("content") || !responseJson["content"].is_array())
+    {
+        return "";
+    }
+
+    for (const auto& block : responseJson["content"])
+    {
+        if (block.contains("type") && block["type"] == "text" &&
+            block.contains("text") && block["text"].is_string())
+        {
+            return block["text"].get<std::string>();
+        }
+    }
+
+    return "";
+}
+
 } // anonymous namespace
 
 // ============================================================================
@@ -253,10 +292,17 @@ std::string ExtractJsonFromResponse(const std::string& content)
 namespace
 {
 
-/// Make HTTP POST request to Claude API
+/// Make HTTP POST request to Claude API.
+/// @param outStatus optional; receives the HTTP status code (0 on network error)
 std::string HttpPost(const std::string& host, const std::string& path,
-                     const std::string& body, const std::string& apiKey)
+                     const std::string& body, const std::string& apiKey,
+                     DWORD* outStatus = nullptr)
 {
+    if (outStatus)
+    {
+        *outStatus = 0;
+    }
+
     std::string response;
     HINTERNET hSession = nullptr;
     HINTERNET hConnect = nullptr;
@@ -284,6 +330,11 @@ std::string HttpPost(const std::string& host, const std::string& path,
         cleanup();
         return "";
     }
+
+    // Apply explicit timeouts so a stalled connection can't hang the worker
+    // thread indefinitely.
+    WinHttpSetTimeouts(hSession, kResolveTimeoutMs, kConnectTimeoutMs,
+                       kSendTimeoutMs, kReceiveTimeoutMs);
 
     // Connect to server
     std::wstring wideHost = Utf8ToWide(host);
@@ -357,6 +408,11 @@ std::string HttpPost(const std::string& host, const std::string& path,
         &statusCodeSize,
         WINHTTP_NO_HEADER_INDEX);
 
+    if (outStatus)
+    {
+        *outStatus = statusCode;
+    }
+
     if (statusCode != kHttpStatusOK)
     {
         Log("HTTP request failed with status: " + std::to_string(statusCode));
@@ -388,6 +444,72 @@ std::string HttpPost(const std::string& host, const std::string& path,
     } while (dwSize > 0);
 
     cleanup();
+    return response;
+}
+
+/// True if an HTTP status / network outcome is worth retrying.
+bool IsRetryable(DWORD statusCode, const std::string& response)
+{
+    // Network-level failure: empty body with no status code.
+    if (statusCode == 0 && response.empty())
+    {
+        return true;
+    }
+    return statusCode == kHttpStatusTooManyRequests ||
+           statusCode == kHttpStatusOverloaded ||
+           (statusCode >= 500 && statusCode < 600);
+}
+
+/// HTTP POST with exponential-backoff retry on transient failures.
+std::string HttpPostWithRetry(const std::string& host, const std::string& path,
+                              const std::string& body, const std::string& apiKey)
+{
+    std::string response;
+    DWORD statusCode = 0;
+
+    for (int attempt = 1; attempt <= kMaxHttpAttempts; attempt++)
+    {
+        if (g_asyncCancelled.load())
+        {
+            return response; // Shutdown/cancel requested; stop retrying.
+        }
+
+        response = HttpPost(host, path, body, apiKey, &statusCode);
+
+        if (statusCode == kHttpStatusOK)
+        {
+            return response;
+        }
+
+        const bool canRetry = attempt < kMaxHttpAttempts && IsRetryable(statusCode, response);
+        if (!canRetry)
+        {
+            return response; // Non-retryable, or out of attempts: return as-is.
+        }
+
+        // Exponential backoff: base * 2^(attempt-1), capped.
+        DWORD delay = kRetryBaseDelayMs << (attempt - 1);
+        if (delay > kRetryMaxDelayMs)
+        {
+            delay = kRetryMaxDelayMs;
+        }
+
+        Log("[RETRY] Transient API failure (status " + std::to_string(statusCode) +
+            ") on attempt " + std::to_string(attempt) + "/" + std::to_string(kMaxHttpAttempts) +
+            ", retrying in " + std::to_string(delay) + "ms...");
+
+        // Sleep in small slices so a cancel/shutdown isn't blocked for the full delay.
+        constexpr DWORD kSleepSliceMs = 100;
+        for (DWORD waited = 0; waited < delay; waited += kSleepSliceMs)
+        {
+            if (g_asyncCancelled.load())
+            {
+                return response;
+            }
+            Sleep(kSleepSliceMs);
+        }
+    }
+
     return response;
 }
 
@@ -602,6 +724,41 @@ bool Initialize()
         }
     }
 
+    // Optional: override the model without rebuilding (e.g. "claude-sonnet-4-6"
+    // for faster/cheaper play). Defaults to kDefaultModel.
+    {
+        char* envModel = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&envModel, &len, "CLAUDE_MODEL") == 0 && envModel != nullptr)
+        {
+            if (envModel[0] != '\0')
+            {
+                g_model = std::string(envModel);
+                Log("Claude model overridden from environment: " + g_model);
+            }
+            free(envModel);
+        }
+    }
+
+    // Optional: override max output tokens.
+    {
+        char* envMaxTokens = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&envMaxTokens, &len, "CLAUDE_MAX_TOKENS") == 0 && envMaxTokens != nullptr)
+        {
+            int parsed = atoi(envMaxTokens);
+            if (parsed > 0)
+            {
+                g_maxTokens = parsed;
+                Log("Claude max_tokens overridden from environment: " + std::to_string(g_maxTokens));
+            }
+            free(envMaxTokens);
+        }
+    }
+
+    Log(std::string("Claude API configured: model=") + g_model +
+        ", max_tokens=" + std::to_string(g_maxTokens));
+
     return true;
 }
 
@@ -632,7 +789,7 @@ bool TestConnection()
     });
 
     std::string body = requestBody.dump();
-    std::string response = HttpPost(kApiHost, kApiPath, body, g_apiKey);
+    std::string response = HttpPostWithRetry(kApiHost, kApiPath, body, g_apiKey);
 
     if (response.empty())
     {
@@ -651,11 +808,9 @@ bool TestConnection()
             return false;
         }
 
-        if (responseJson.contains("content") &&
-            responseJson["content"].is_array() &&
-            !responseJson["content"].empty())
+        std::string content = ExtractAssistantText(responseJson);
+        if (!content.empty())
         {
-            std::string content = responseJson["content"][0]["text"].get<std::string>();
             Log("Claude API test response: " + content);
             Log("Claude API connection test SUCCESSFUL!");
             return true;
@@ -715,7 +870,16 @@ std::string GetActionFromClaude(const std::string& gameStateJson)
     json requestBody;
     requestBody["model"] = g_model;
     requestBody["max_tokens"] = g_maxTokens;
-    requestBody["system"] = systemPrompt;
+    // Send the system prompt as a cacheable block. It is stable across all turns
+    // of a game, so prompt caching cuts cost and latency on every turn after the
+    // first (cache reads cost ~0.1x of input).
+    requestBody["system"] = json::array({
+        {
+            {"type", "text"},
+            {"text", systemPrompt},
+            {"cache_control", {{"type", "ephemeral"}}}
+        }
+    });
     requestBody["messages"] = json::array({
         {{"role", "user"}, {"content", "Current game state:\n" + gameStateJson + "\n\nWhat is your next action?"}}
     });
@@ -723,8 +887,8 @@ std::string GetActionFromClaude(const std::string& gameStateJson)
     std::string body = requestBody.dump();
     Log("Sending request to Claude API...");
 
-    // Make the API call
-    std::string response = HttpPost(kApiHost, kApiPath, body, g_apiKey);
+    // Make the API call (with retry on transient failures)
+    std::string response = HttpPostWithRetry(kApiHost, kApiPath, body, g_apiKey);
 
     if (response.empty())
     {
@@ -748,11 +912,9 @@ std::string GetActionFromClaude(const std::string& gameStateJson)
         }
 
         // Extract content
-        if (responseJson.contains("content") &&
-            responseJson["content"].is_array() &&
-            !responseJson["content"].empty())
+        std::string content = ExtractAssistantText(responseJson);
+        if (!content.empty())
         {
-            std::string content = responseJson["content"][0]["text"].get<std::string>();
             Log("Claude raw response: " + content);
 
             std::string result;

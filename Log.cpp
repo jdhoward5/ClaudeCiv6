@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <mutex>
 #include <Windows.h>
 
 // ============================================================================
@@ -17,6 +18,10 @@ namespace
     constexpr const char* kLogFileName = "civ6_claude_hook.log";
     constexpr size_t kTimestampBufferSize = 64;
     constexpr size_t kHexBufferSize = 128;
+
+    // Serializes log writes; Log() is called from the worker, polling, and main
+    // threads concurrently, which would otherwise interleave lines in the file.
+    std::mutex g_logMutex;
 }
 
 // ============================================================================
@@ -38,6 +43,8 @@ std::string GetTimestamp()
 void Log(const std::string& message)
 {
     std::string timestamped = GetTimestamp() + " " + message;
+
+    std::lock_guard<std::mutex> lock(g_logMutex);
 
     // Output to debug console (visible in DebugView)
     OutputDebugStringA((timestamped + "\n").c_str());

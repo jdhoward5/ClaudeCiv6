@@ -88,6 +88,20 @@ ClaudeAI.Config = {
 
 Edit `system_prompt.txt` to modify Claude's instructions without rebuilding the DLL.
 
+### Model selection
+
+By default the mod uses `claude-opus-4-8` for the strongest strategic play. Override without rebuilding via environment variables (set before launching the game), then restart your terminal:
+
+```cmd
+setx CLAUDE_MODEL "claude-sonnet-4-6"
+setx CLAUDE_MAX_TOKENS "8192"
+```
+
+- `CLAUDE_MODEL` — a faster/cheaper model (e.g. `claude-sonnet-4-6`) if you prefer quicker turns over peak strategic strength.
+- `CLAUDE_MAX_TOKENS` — maximum output tokens per turn (default `8192`).
+
+The system prompt is sent with prompt caching enabled, so turns after the first reuse the cached prompt (lower cost and latency). Transient API failures (rate limits, 5xx, overload) are retried automatically with exponential backoff.
+
 ## Architecture
 
 ```
