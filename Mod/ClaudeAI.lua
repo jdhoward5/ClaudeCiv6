@@ -14,6 +14,7 @@ ClaudeAI.Config = {
     -- Which player ID should Claude control
     -- Set to -1 to auto-detect the local human player
     -- Set to a specific ID (0, 1, 2, etc.) to control a specific player
+    -- NOTE: in hotseat mode this MUST be a specific seat (see hotseatMode below)
     controlledPlayerID = -1,
     -- Is Claude AI enabled?
     enabled = true,
@@ -21,6 +22,20 @@ ClaudeAI.Config = {
     debugLogging = true,
     -- Auto-process turns when it's Claude's turn (set to false to require manual trigger)
     autoProcessTurn = true,
+
+    -- HOT SEAT MODE (experimental, opt-in) ------------------------------------
+    -- Run a local-multiplayer "Hot Seat" game where Claude controls a SECOND
+    -- human seat (e.g. you = player 0, Claude = player 1, remaining slots = AI).
+    -- On Claude's seat's turn, Civ6 makes that seat the active local player, so
+    -- the normal local-player action path drives it with full API access.
+    --
+    -- To use:
+    --   1) Set hotseatMode = true
+    --   2) Set controlledPlayerID to Claude's FIXED seat (e.g. 1) -- NOT -1.
+    --      Auto-detect is disabled in hotseat (it would latch onto your seat).
+    --   3) Start a Hot Seat game with >=2 human seats; make Claude's seat Human.
+    -- When false (default), behavior is unchanged (single-player, local seat).
+    hotseatMode = false,
 }
 
 -- ============================================================================
@@ -5650,9 +5665,27 @@ end
 -- EVENT HANDLERS
 -- ============================================================================
 
+-- Hot-seat turn trigger. Events.PlayerTurnActivated fires (player, bFirstTime)
+-- for each player as their turn activates; route the first activation through the
+-- normal turn handler (which gates on the controlled seat and dedups).
+function ClaudeAI.OnPlayerTurnActivated(player, bFirstTime)
+    if bFirstTime == false then
+        return
+    end
+    ClaudeAI.OnPlayerTurnStarted(player)
+end
+
 function ClaudeAI.OnPlayerTurnStarted(playerID)
     -- Check if Claude AI is enabled
     if not ClaudeAI.Config.enabled then
+        return
+    end
+
+    -- Auto-detect local player if not set (single-player only). In hot seat the
+    -- active local player rotates between seats each handoff, so auto-detect would
+    -- latch onto whichever seat fires first -- require an explicit seat instead.
+    if ClaudeAI.Config.controlledPlayerID < 0 and ClaudeAI.Config.hotseatMode then
+        ClaudeAI.Log("ERROR: hotseatMode requires controlledPlayerID set to Claude's seat (e.g. 1); auto-detect is disabled in hot seat")
         return
     end
 
@@ -5684,6 +5717,15 @@ function ClaudeAI.OnPlayerTurnStarted(playerID)
     if playerID ~= ClaudeAI.Config.controlledPlayerID then
         return
     end
+
+    -- Dedup: hot seat registers an extra turn event (PlayerTurnActivated) alongside
+    -- GameEvents.PlayerTurnStarted, so the same turn can fire twice. Process once.
+    local turnKey = tostring(Game.GetCurrentGameTurn()) .. ":" .. tostring(playerID)
+    if ClaudeAI._lastTurnKey == turnKey then
+        ClaudeAI.Log("Turn " .. turnKey .. " already processed this activation, skipping duplicate")
+        return
+    end
+    ClaudeAI._lastTurnKey = turnKey
 
     local pPlayer = Players[playerID]
     if not pPlayer then return end
@@ -5808,6 +5850,19 @@ function ClaudeAI.OnLoadGameViewStateDone()
         if GameEvents and GameEvents.PlayerTurnStarted then
             GameEvents.PlayerTurnStarted.Add(ClaudeAI.OnPlayerTurnStarted)
             print("[ClaudeAI] Registered PlayerTurnStarted handler via GameEvents")
+        end
+    end
+
+    -- Hot seat: also register PlayerTurnActivated, the per-player turn event the
+    -- hot-seat / autoplay mods rely on (fires in multiplayer/hot seat where the
+    -- single-player PlayerTurnStarted path may not). The dedup in OnPlayerTurnStarted
+    -- prevents double-processing if both events fire for the same turn.
+    if ClaudeAI.Config.hotseatMode then
+        if Events.PlayerTurnActivated then
+            Events.PlayerTurnActivated.Add(ClaudeAI.OnPlayerTurnActivated)
+            print("[ClaudeAI] [HOTSEAT] Registered PlayerTurnActivated handler (Claude seat=" .. tostring(ClaudeAI.Config.controlledPlayerID) .. ")")
+        else
+            print("[ClaudeAI] [HOTSEAT] WARNING: Events.PlayerTurnActivated not available")
         end
     end
 end

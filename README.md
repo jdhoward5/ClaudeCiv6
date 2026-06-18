@@ -104,6 +104,28 @@ setx CLAUDE_MAX_TOKENS "8192"
 
 The system prompt is sent with prompt caching enabled, so turns after the first reuse the cached prompt (lower cost and latency). Transient API failures (rate limits, 5xx, overload) are retried automatically with exponential backoff.
 
+### Hot Seat mode (experimental) — Claude as a separate civ
+
+By default Claude plays *your* seat. **Hot Seat mode** instead lets Claude control a **second seat** in a local-multiplayer game, so you and Claude each play your own civilization. This works because Civ6 makes each hot-seat seat the active "local player" on its turn — which is the access the mod needs (driving a normal built-in AI player from a script isn't reliably supported by the modding API).
+
+**Enable it** in `ClaudeAI.lua`:
+
+```lua
+ClaudeAI.Config = {
+    hotseatMode = true,        -- opt in
+    controlledPlayerID = 1,    -- Claude's FIXED seat (NOT -1) — e.g. player 1
+    enabled = true,
+}
+```
+
+**Start the game:**
+1. Main menu → **Multiplayer → Hot Seat** → Create Game (Gathering Storm ruleset as normal).
+2. In the staging room, make **at least two seats Human**: seat 0 = you, seat 1 = Claude. Leave the rest as AI.
+3. Set `controlledPlayerID` to Claude's seat number (1 for the second slot).
+4. Start. On Claude's turn the mod drives that seat; on your turn you play normally.
+
+**Current status:** the mod-side turn handling is implemented and gated behind `hotseatMode`. The between-turns "pass the keyboard" handoff popup is **not yet auto-dismissed** for Claude's seat — for now, click **Start Turn** when it's Claude's turn and the mod takes over from there. Auto-dismissing that popup is the next step. See `civ6_claude_hook.log` / `Lua.log` (look for `[HOTSEAT]`) to verify Claude's seat turns fire.
+
 ## Architecture
 
 ```
