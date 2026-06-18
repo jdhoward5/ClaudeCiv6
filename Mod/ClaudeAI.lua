@@ -3244,38 +3244,40 @@ function ActionHandlers.attack(playerID, action, pPlayer, isLocalPlayer)
         tParams[UnitOperationTypes.PARAM_X] = action.target_x
         tParams[UnitOperationTypes.PARAM_Y] = action.target_y
 
-        -- Try ranged attack first if unit has ranged capability
-        if isRanged and isLocalPlayer and UnitManager.RequestOperation then
-            if UnitOperationTypes.RANGE_ATTACK then
-                if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.RANGE_ATTACK, nil, tParams) then
-                    UnitManager.RequestOperation(pUnit, UnitOperationTypes.RANGE_ATTACK, tParams)
-                    ClaudeAI.Log("Executed ranged attack via RequestOperation")
-                    return
-                end
+        if isRanged then
+            -- Ranged units attack the target tile via RANGE_ATTACK. No melee fallback
+            -- (don't move a ranged unit into the enemy and waste it).
+            if isLocalPlayer and UnitManager.RequestOperation and UnitOperationTypes.RANGE_ATTACK
+               and UnitManager.CanStartOperation(pUnit, UnitOperationTypes.RANGE_ATTACK, nil, tParams) then
+                UnitManager.RequestOperation(pUnit, UnitOperationTypes.RANGE_ATTACK, tParams)
+                ClaudeAI.Log("Executed ranged attack via RequestOperation")
+                return
+            end
+            error("Ranged unit cannot attack (" .. action.target_x .. "," .. action.target_y ..
+                ") - target out of range or no valid target there")
+        end
+
+        -- Melee: move into the enemy tile with the ATTACK modifier. This is how the
+        -- base game issues a move-into-enemy attack; it animates and resolves combat.
+        if isLocalPlayer and UnitManager.RequestOperation and UnitOperationTypes.MOVE_TO then
+            if UnitOperationMoveModifiers then
+                tParams[UnitOperationTypes.PARAM_MODIFIERS] = UnitOperationMoveModifiers.ATTACK
+            end
+            if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.MOVE_TO, nil, tParams) then
+                UnitManager.RequestOperation(pUnit, UnitOperationTypes.MOVE_TO, tParams)
+                ClaudeAI.Log("Executed melee attack via RequestOperation MOVE_TO+ATTACK")
+                return
             end
         end
 
-        -- Try melee attack via RequestOperation for local player
-        if isLocalPlayer and UnitManager.RequestOperation then
-            if UnitOperationTypes.MOVE_TO then
-                if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.MOVE_TO, nil, tParams) then
-                    UnitManager.RequestOperation(pUnit, UnitOperationTypes.MOVE_TO, tParams)
-                    ClaudeAI.Log("Executed melee attack via RequestOperation MOVE_TO")
-                    return
-                end
-            end
-        end
-
-        -- Fallback: For melee units, move to target tile triggers combat automatically
-        -- In Civ6, melee combat is initiated by moving into the enemy tile
-        -- Do NOT use this for ranged units - moving a ranged unit into an enemy wastes it
-        if UnitManager.MoveUnit and not isRanged then
+        -- Fallback: moving a melee unit into the enemy tile triggers combat.
+        if UnitManager.MoveUnit then
             UnitManager.MoveUnit(pUnit, action.target_x, action.target_y)
             ClaudeAI.Log("Executed melee attack via MoveUnit (fallback)")
             return
         end
 
-        error("Cannot perform attack - no attack API available")
+        error("Cannot perform melee attack - no attack API available")
     end)
 
     if success then
@@ -4069,6 +4071,20 @@ function ClaudeAI.GetBuilderActions(pUnit, playerID)
     return result
 end
 
+-- Resolve a unit operation to its hash. Some operations are exposed as
+-- UnitOperationTypes constants (BUILD_IMPROVEMENT, RANGE_ATTACK, MOVE_TO, ...);
+-- others (harvest, remove feature, repair) are NOT in that table and must be
+-- looked up by their GameInfo.UnitOperations row name (e.g. "UNITOPERATION_HARVEST_RESOURCE").
+function ClaudeAI.GetUnitOperationHash(constName, rowName)
+    if constName and UnitOperationTypes and UnitOperationTypes[constName] then
+        return UnitOperationTypes[constName]
+    end
+    if GameInfo.UnitOperations and GameInfo.UnitOperations[rowName] then
+        return GameInfo.UnitOperations[rowName].Hash
+    end
+    return nil
+end
+
 function ActionHandlers.build_improvement(playerID, action, pPlayer, isLocalPlayer)
     if not action.unit_id or not action.improvement then
         ClaudeAI.Log("ERROR: build_improvement requires unit_id and improvement")
@@ -4099,19 +4115,21 @@ function ActionHandlers.build_improvement(playerID, action, pPlayer, isLocalPlay
     end
 
     local success, err = pcall(function()
-        if isLocalPlayer and UnitManager.RequestOperation then
-            -- Use BUILD_IMPROVEMENT operation
-            if UnitOperationTypes.BUILD_IMPROVEMENT then
-                local tParams = {}
-                tParams[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = impInfo.Index
+        if isLocalPlayer and UnitManager.RequestOperation and UnitOperationTypes.BUILD_IMPROVEMENT then
+            -- BUILD_IMPROVEMENT params (matches base-game UnitPanel.lua): the plot
+            -- (the unit's own tile) plus the improvement HASH -- not its Index.
+            local tParams = {}
+            tParams[UnitOperationTypes.PARAM_X] = pUnit:GetX()
+            tParams[UnitOperationTypes.PARAM_Y] = pUnit:GetY()
+            tParams[UnitOperationTypes.PARAM_IMPROVEMENT_TYPE] = impInfo.Hash
 
-                if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.BUILD_IMPROVEMENT, nil, tParams) then
-                    UnitManager.RequestOperation(pUnit, UnitOperationTypes.BUILD_IMPROVEMENT, tParams)
-                    ClaudeAI.Log("Build improvement requested via RequestOperation")
-                    return
-                else
-                    ClaudeAI.Log("CanStartOperation returned false for BUILD_IMPROVEMENT")
-                end
+            if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.BUILD_IMPROVEMENT, nil, tParams) then
+                UnitManager.RequestOperation(pUnit, UnitOperationTypes.BUILD_IMPROVEMENT, tParams)
+                ClaudeAI.Log("Build improvement requested via RequestOperation")
+                return
+            else
+                ClaudeAI.Log("CanStartOperation returned false for BUILD_IMPROVEMENT (" .. improvementName ..
+                    ") at (" .. pUnit:GetX() .. "," .. pUnit:GetY() .. ") - tile may not allow this improvement")
             end
         end
 
@@ -4149,14 +4167,19 @@ function ActionHandlers.harvest(playerID, action, pPlayer, isLocalPlayer)
 
     local success, err = pcall(function()
         if isLocalPlayer and UnitManager.RequestOperation then
-            if UnitOperationTypes.HARVEST_RESOURCE then
-                if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.HARVEST_RESOURCE, nil, nil) then
-                    UnitManager.RequestOperation(pUnit, UnitOperationTypes.HARVEST_RESOURCE, nil)
+            -- HARVEST_RESOURCE is a GameInfo.UnitOperations row, not a
+            -- UnitOperationTypes constant. Issue by hash; no params (unit's tile).
+            local actionHash = ClaudeAI.GetUnitOperationHash("HARVEST_RESOURCE", "UNITOPERATION_HARVEST_RESOURCE")
+            if actionHash then
+                if UnitManager.CanStartOperation(pUnit, actionHash, nil, nil) then
+                    UnitManager.RequestOperation(pUnit, actionHash, nil)
                     ClaudeAI.Log("Harvest requested via RequestOperation")
                     return
                 else
-                    ClaudeAI.Log("CanStartOperation returned false for HARVEST_RESOURCE")
+                    ClaudeAI.Log("CanStartOperation returned false for HARVEST_RESOURCE (no harvestable resource on this tile, or no charges)")
                 end
+            else
+                ClaudeAI.Log("ERROR: UNITOPERATION_HARVEST_RESOURCE not found in GameInfo.UnitOperations")
             end
         end
         error("No harvest API available")
@@ -4186,14 +4209,18 @@ function ActionHandlers.remove_feature(playerID, action, pPlayer, isLocalPlayer)
 
     local success, err = pcall(function()
         if isLocalPlayer and UnitManager.RequestOperation then
-            if UnitOperationTypes.REMOVE_FEATURE then
-                if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.REMOVE_FEATURE, nil, nil) then
-                    UnitManager.RequestOperation(pUnit, UnitOperationTypes.REMOVE_FEATURE, nil)
+            -- REMOVE_FEATURE is a GameInfo.UnitOperations row, not a UnitOperationTypes constant.
+            local actionHash = ClaudeAI.GetUnitOperationHash("REMOVE_FEATURE", "UNITOPERATION_REMOVE_FEATURE")
+            if actionHash then
+                if UnitManager.CanStartOperation(pUnit, actionHash, nil, nil) then
+                    UnitManager.RequestOperation(pUnit, actionHash, nil)
                     ClaudeAI.Log("Remove feature requested via RequestOperation")
                     return
                 else
-                    ClaudeAI.Log("CanStartOperation returned false for REMOVE_FEATURE")
+                    ClaudeAI.Log("CanStartOperation returned false for REMOVE_FEATURE (no removable feature on this tile, or no charges)")
                 end
+            else
+                ClaudeAI.Log("ERROR: UNITOPERATION_REMOVE_FEATURE not found in GameInfo.UnitOperations")
             end
         end
         error("No remove feature API available")
@@ -5131,14 +5158,18 @@ function ActionHandlers.repair(playerID, action, pPlayer, isLocalPlayer)
 
     local success, err = pcall(function()
         if isLocalPlayer and UnitManager.RequestOperation then
-            if UnitOperationTypes.REPAIR then
-                if UnitManager.CanStartOperation(pUnit, UnitOperationTypes.REPAIR, nil, nil) then
-                    UnitManager.RequestOperation(pUnit, UnitOperationTypes.REPAIR, nil)
+            -- REPAIR is a GameInfo.UnitOperations row, not a UnitOperationTypes constant.
+            local actionHash = ClaudeAI.GetUnitOperationHash("REPAIR", "UNITOPERATION_REPAIR")
+            if actionHash then
+                if UnitManager.CanStartOperation(pUnit, actionHash, nil, nil) then
+                    UnitManager.RequestOperation(pUnit, actionHash, nil)
                     ClaudeAI.Log("Repair requested via RequestOperation")
                     return
                 else
-                    ClaudeAI.Log("CanStartOperation returned false for REPAIR")
+                    ClaudeAI.Log("CanStartOperation returned false for REPAIR (nothing to repair on this tile?)")
                 end
+            else
+                ClaudeAI.Log("ERROR: UNITOPERATION_REPAIR not found in GameInfo.UnitOperations")
             end
         end
         error("No repair API available")
@@ -5726,6 +5757,11 @@ function ClaudeAI.OnPlayerTurnStarted(playerID)
         return
     end
     ClaudeAI._lastTurnKey = turnKey
+
+    if ClaudeAI.Config.hotseatMode then
+        ClaudeAI.Log("[HOTSEAT] processing seat " .. tostring(playerID)
+            .. " (GetLocalPlayer=" .. tostring(Game.GetLocalPlayer()) .. ")")
+    end
 
     local pPlayer = Players[playerID]
     if not pPlayer then return end
