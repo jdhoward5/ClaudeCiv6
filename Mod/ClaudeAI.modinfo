@@ -33,6 +33,13 @@
             </Properties>
             <File>UI/ClaudeIndicator.xml</File>
         </AddUserInterfaces>
+
+        <!-- Hot seat: shadow the base PlayerChange.lua to auto-confirm the
+             handoff for Claude's seat only (no effect outside hot seat / for
+             human seats). Imported by leaf filename so it overrides the base. -->
+        <ImportFiles id="ClaudeAI_PlayerChange">
+            <File>PlayerChange.lua</File>
+        </ImportFiles>
     </InGameActions>
 
     <Files>
@@ -41,5 +48,6 @@
         <File>UI/ClaudeIndicator.lua</File>
         <File>ClaudeAI_SetupUI.xml</File>
         <File>ClaudeAI_SetupUI.lua</File>
+        <File>PlayerChange.lua</File>
     </Files>
 </Mod>

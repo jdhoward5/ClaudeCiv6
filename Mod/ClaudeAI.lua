@@ -60,6 +60,8 @@ local PROPERTY_KEYS = {
 
     -- State flags
     IS_THINKING = "ClaudeAI_IsThinking",
+    -- Hot seat: the seat the PlayerChange popup override should auto-confirm
+    AUTO_ADVANCE_SEAT = "ClaudeAI_AutoAdvanceSeat",
 
     -- Persistent data
     STRATEGY_NOTES = "ClaudeAI_StrategyNotes",
@@ -5899,6 +5901,12 @@ function ClaudeAI.OnLoadGameViewStateDone()
             print("[ClaudeAI] [HOTSEAT] Registered PlayerTurnActivated handler (Claude seat=" .. tostring(ClaudeAI.Config.controlledPlayerID) .. ")")
         else
             print("[ClaudeAI] [HOTSEAT] WARNING: Events.PlayerTurnActivated not available")
+        end
+        -- Publish Claude's seat so the PlayerChange.lua override auto-confirms the
+        -- "pass the keyboard" handoff for that seat only (hands-free AI turns).
+        if Game and Game.SetProperty then
+            Game.SetProperty(PROPERTY_KEYS.AUTO_ADVANCE_SEAT, ClaudeAI.Config.controlledPlayerID)
+            print("[ClaudeAI] [HOTSEAT] Published auto-advance seat = " .. tostring(ClaudeAI.Config.controlledPlayerID))
         end
     end
 end
